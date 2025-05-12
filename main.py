@@ -1,0 +1,323 @@
+import cv2
+import numpy as np
+import matplotlib.pyplot as plt
+import os
+from scipy.optimize import least_squares
+from tomlkit import boolean
+from tqdm import tqdm
+
+
+def image_loader(dir_path: str, k_path: str, scale: float = 2):
+    # load camera intrinsic parameters (K matrix)
+    with open(k_path, "r") as f:
+        lines = f.readlines()
+        K = np.float32([i.strip().split(" ") for i in lines])
+        
+    img_list = [os.path.join(dir_path, i) for i in os.listdir(dir_path)]
+    print(img_list)
+
+    # Downscale instrinsic parameters
+    K[0, 0] /= scale
+    K[1, 1] /= scale
+    K[0, 2] /= scale
+    K[1, 2] /= scale
+
+    return img_list, K
+
+
+def downscale_image(img, scale=2):
+    # Downscale image by a factor of 2 using Gaussian pyramid
+    for _ in range(1, int(scale / 2) + 1):
+        img = cv2.pyrDown(img)
+    
+    return img
+
+
+def triangulation(point_2d_1, point_2d_2, projection_matrix_1, projection_matrix_2):
+    pt_cloud = cv2.triangulatePoints(point_2d_1, point_2d_2, projection_matrix_1.T, projection_matrix_2.T)
+    # print(f"point cloud from triangulation:\n {pt_cloud}")
+    return projection_matrix_1.T, projection_matrix_2.T, (pt_cloud / pt_cloud[3])
+
+
+def pnp(obj_point, image_point, K, dist_coeff, rot_vector, initial):
+    if initial == 1:
+        obj_point = obj_point[:, 0 ,:]
+        image_point = image_point.T
+        rot_vector = rot_vector.T 
+
+    try:
+        # Try to solve PnP with RANSAC
+        _, rot_vector_calc, tran_vector, inlier = cv2.solvePnPRansac(obj_point, image_point, K, dist_coeff, cv2.SOLVEPNP_ITERATIVE)
+        rot_matrix, _ = cv2.Rodrigues(rot_vector_calc)
+        
+        if inlier is not None:
+            image_point = image_point[inlier[:, 0]]
+            obj_point = obj_point[inlier[:, 0]]
+            rot_vector = rot_vector[inlier[:, 0]]
+            
+    except cv2.error:
+        # If PnP fails, return identity rotation and zero translation
+        print("Warning: PnP failed, returning default pose")
+        rot_matrix = np.eye(3)
+        tran_vector = np.zeros((3, 1))
+        inlier = None
+
+    return rot_matrix, tran_vector, image_point, obj_point, rot_vector
+
+
+def reprojection_error(obj_points, image_points, transform_matrix, K, homogenity):
+    '''
+    Calculates the reprojection error.
+    '''
+    # Handle empty object points
+    if obj_points.size == 0:
+        return float('inf'), obj_points  # Return high error if no points
+
+    rot_matrix = transform_matrix[:3, :3]
+    tran_vector = transform_matrix[:3, 3]
+    rot_vector, _ = cv2.Rodrigues(rot_matrix)
+    
+    # Convert to homogeneous coordinates if needed
+    if homogenity == 1:
+        obj_points = cv2.convertPointsFromHomogeneous(obj_points.T)
+    
+    # Reshape to (N, 1, 3) if necessary
+    obj_points = np.asarray(obj_points).reshape(-1, 1, 3)
+    
+    # Project points and handle potential failures
+    image_points_calc, _ = cv2.projectPoints(obj_points, rot_vector, tran_vector, K, None)
+    
+    # Check if projection failed
+    if image_points_calc is None:
+        return float('inf'), obj_points
+    
+    image_points_calc = np.float32(image_points_calc[:, 0, :])
+    image_points = np.float32(image_points.T if homogenity == 1 else image_points)
+    
+    total_error = cv2.norm(image_points_calc, image_points, cv2.NORM_L2)
+    return total_error / len(image_points_calc), obj_points
+
+
+def to_ply(point_clouds, colors):
+    out_points = point_clouds.reshape(-1, 3) * 200
+    out_colors = colors.reshape(-1, 3)
+    print(f"out_colors shape: {out_colors.shape}, out_points shape: {out_points.shape}")
+    verts = np.hstack([out_points, out_colors])
+
+    mean = np.mean(verts[:, :3], axis=0)
+    scaled_verts = verts[:, :3] - mean
+    dist = np.sqrt(scaled_verts[:, 0] ** 2 + scaled_verts[:, 1] ** 2 + scaled_verts[:, 2] ** 2)
+    indx = np.where(dist < np.mean(dist) + 300)
+
+    verts = verts[indx]
+    ply_header = '''ply
+        format ascii 1.0
+        element vertex %(vert_num)d
+        property float x
+        property float y
+        property float z
+        property uchar blue
+        property uchar green
+        property uchar red
+        end_header
+        '''
+    
+    with open('result.ply', 'w') as f:
+        f.write(ply_header % dict(vert_num=len(verts)))
+        np.savetxt(f, verts, '%f %f %f %d %d %d')
+
+
+def to_obj(point_clouds, colors):
+    out_points = point_clouds.reshape(-1, 3) * 200
+    out_colors = colors.reshape(-1, 3)
+    print(f"out_colors shape: {out_colors.shape}, out_points shape: {out_points.shape}")
+    verts = np.hstack([out_points, out_colors])
+
+    mean = np.mean(verts[:, :3], axis=0)
+    scaled_verts = verts[:, :3] - mean
+    dist = np.sqrt(scaled_verts[:, 0] ** 2 + scaled_verts[:, 1] ** 2 + scaled_verts[:, 2] ** 2)
+    indx = np.where(dist < np.mean(dist) + 300)
+
+    verts = verts[indx]
+    with open('result.obj', 'w') as f:
+        # Write vertices with colors
+        for v in verts:
+            f.write(f"v {v[0]:.6f} {v[1]:.6f} {v[2]:.6f} {int(v[3])} {int(v[4])} {int(v[5])}\n")
+ 
+
+def correspondences(img_points_1, img_points_2, img_points_3):
+    cr_points_1 = []
+    cr_points_2 = []
+
+    for i in range(img_points_1.shape[0]):
+        a = np.where(img_points_2 == img_points_1[i, :])
+        if a[0].size != 0:
+            cr_points_1.append(i)
+            cr_points_2.append(a[0][0])
+
+    mask_array_1 = np.ma.array(img_points_2, mask=False)
+    mask_array_1.mask[cr_points_2] = True
+    mask_array_1 = mask_array_1.compressed()
+    mask_array_1 = mask_array_1.reshape(int(mask_array_1.shape[0] / 2), 2)
+
+    mask_array_2 = np.ma.array(img_points_3, mask=False)
+    mask_array_2.mask[cr_points_2] = True
+    mask_array_2 = mask_array_2.compressed()
+    mask_array_2 = mask_array_2.reshape(int(mask_array_2.shape[0] / 2), 2)
+
+    return (
+        np.array(cr_points_1, dtype=np.int32),
+        np.array(cr_points_2, dtype=np.int32),
+        mask_array_1,
+        mask_array_2
+    )
+
+
+def find_features(image_0, image_1):
+    '''
+    Feature detection using the sift algorithm and KNN
+    return keypoints(features) of image1 and image2
+    '''
+
+    # Initialize SIFT
+    sift = cv2.SIFT_create()
+
+    # Convert to grayscale (SIFT requires grayscale images)
+    # detectAndCompute() detects keypoints and computes descriptors
+    # key_points is a list of keypoints in the image
+    # descr is a descriptor of the image (128 floats for each keypoint)
+    key_points_0, desc_0 = sift.detectAndCompute(cv2.cvtColor(image_0, cv2.COLOR_BGR2GRAY), None)
+    key_points_1, desc_1 = sift.detectAndCompute(cv2.cvtColor(image_1, cv2.COLOR_BGR2GRAY), None)
+
+    # BruteForce Matcher to compare descriptors
+    bf = cv2.BFMatcher()
+    # Find its 2 nearest neighbors for each descriptor in desc_0 and desc_1 based on Euclidean distance
+    matches = bf.knnMatch(desc_0, desc_1, k=2)
+    feature = []
+    for m, n in matches:
+        if m.distance < 0.70 * n.distance:
+            feature.append(m)
+
+    return np.float32([key_points_0[m.queryIdx].pt for m in feature]), np.float32([key_points_1[m.trainIdx].pt for m in feature])
+
+
+def run(img_dir: str, k_path: str, result_format: str):
+    image_list, K = image_loader(img_dir, k_path)
+    '''
+    image_list = ['images/monument\\DSC_0351.JPG', 'images/monument\\DSC_0352.JPG', 'images/monument\\DSC_0353.JPG', ...]
+    K = array([[1.37974e+03, 0.00000e+00, 7.60345e+02],
+       [0.00000e+00, 1.38208e+03, 5.03405e+02],
+       [0.00000e+00, 0.00000e+00, 1.00000e+00]], dtype=float32)
+    '''
+
+    # ravel() ---> flattens array into a 1D array
+    pose_array = K.ravel()
+    '''
+    pose_array = array([1.37974e+03, 0.00000e+00, 7.60345e+02, 0.00000e+00, 1.38208e+03,
+       5.03405e+02, 0.00000e+00, 0.00000e+00, 1.00000e+00], dtype=float32)
+    '''
+
+    # This is transform matrix, represent [R|t] 
+    # R is 3x3 matrix, t is 3x1 vector
+    transform_matrix_0 = np.array(
+        [[1, 0, 0, 0], 
+         [0, 1, 0, 0], 
+         [0, 0, 1, 0]])
+    # np.empty gives random values
+    transform_matrix_1 = np.empty((3, 4))
+
+    # matmul = matrix multiplication
+    # P = K.[R|t] ---> multiplication of K and [R|t] results in a projection matrix
+    pose_0 = np.matmul(K, transform_matrix_0)
+    pose_1 = np.empty((3, 4)) 
+
+    # numpy array to hold 3D points and colors
+    total_points = np.zeros((1, 3))
+    total_colors = np.zeros((1, 3))
+
+    # Read the first two images and reduce the size of the images using cv2.pyrDown
+    image_0 = downscale_image(cv2.imread(image_list[0]))
+    image_1 = downscale_image(cv2.imread(image_list[1]))
+
+    # Find features in the first two images using SIFT and KNN
+    feature_0, feature_1 = find_features(image_0, image_1)
+
+    # Find the essential matrix and filter the features (remove outliers)
+    essential_matrix, em_mask = cv2.findEssentialMat(feature_0, feature_1, K, method=cv2.RANSAC, prob=0.999, threshold=0.4, mask=None)
+    feature_0 = feature_0[em_mask.ravel() == 1]
+    feature_1 = feature_1[em_mask.ravel() == 1]
+
+    # Recover the pose and filter the features (remove outliers)
+    _, rot_matrix, tran_matrix, em_mask = cv2.recoverPose(essential_matrix, feature_0, feature_1, K)
+    feature_0 = feature_0[em_mask.ravel() > 0]
+    feature_1 = feature_1[em_mask.ravel() > 0]
+
+    # Update the transform matrix [R|t] using the recovered pose and [R|t]
+    # R1 = R_rel * R0
+    transform_matrix_1[:3, :3] = np.matmul(rot_matrix, transform_matrix_0[:3, :3])
+    # t1 = t_0 + (R0 * t_rel)
+    transform_matrix_1[:3, 3] = transform_matrix_0[:3, 3] + np.matmul(transform_matrix_0[:3, :3], tran_matrix.ravel())
+
+    pose_1 = np.matmul(K, transform_matrix_1)
+
+    feature_0, feature_1, points_3d = triangulation(pose_0, pose_1, feature_0, feature_1)
+    error, points_3d = reprojection_error(points_3d, feature_1, transform_matrix_1, K, homogenity = 1)
+        #ideally error < 1
+    _, _, feature_1, points_3d, _ = pnp(points_3d, feature_1, K, np.zeros((5, 1), dtype=np.float32), feature_0, initial=1)
+    total_images = len(image_list) - 2 
+    pose_array = np.hstack((np.hstack((pose_array, pose_0.ravel())), pose_1.ravel()))
+    threshold = 0.5
+
+    for i in tqdm(range(total_images)):
+        image_2 = downscale_image(cv2.imread(image_list[i + 2]))
+        features_cur, features_2 = find_features(image_1, image_2)
+
+        if i != 0:
+            feature_0, feature_1, points_3d = triangulation(pose_0, pose_1, feature_0, feature_1)
+            feature_1 = feature_1.T
+            points_3d = cv2.convertPointsFromHomogeneous(points_3d.T)
+            points_3d = points_3d[:, 0, :]
+
+        cm_points_0, cm_points_1, cm_mask_0, cm_mask_1 = correspondences(feature_1, features_cur, features_2)
+        cm_points_2 = features_2[cm_points_1]
+        cm_points_cur = features_cur[cm_points_1]
+
+        rot_matrix, tran_matrix, cm_points_2, points_3d, cm_points_cur = pnp(points_3d[cm_points_0], cm_points_2, K, np.zeros((5, 1), dtype=np.float32), cm_points_cur, initial = 0)
+        # print(rot_matrix.shape)
+        # print(tran_matrix.shape)
+        transform_matrix_1 = np.hstack((rot_matrix, tran_matrix))
+        pose_2 = np.matmul(K, transform_matrix_1)
+
+        error, points_3d = reprojection_error(points_3d, cm_points_2, transform_matrix_1, K, homogenity = 0)
+
+        cm_mask_0, cm_mask_1, points_3d = triangulation(pose_1, pose_2, cm_mask_0, cm_mask_1)
+        error, points_3d = reprojection_error(points_3d, cm_mask_1, transform_matrix_1, K, homogenity = 1)
+        print("Reprojection Error: ", error)
+        pose_array = np.hstack((pose_array, pose_2.ravel()))
+
+        total_points = np.vstack((total_points, points_3d[:, 0, :]))
+        points_left = np.array(cm_mask_1, dtype=np.int32)
+        color_vector = np.array([image_2[l[1], l[0]] for l in points_left.T])
+        total_colors = np.vstack((total_colors, color_vector)) 
+
+        transform_matrix_0 = np.copy(transform_matrix_1)
+        pose_0 = np.copy(pose_1)
+        # plt.scatter(i, error)
+        # plt.pause(0.05)
+
+        image_0 = np.copy(image_1)
+        image_1 = np.copy(image_2)
+        feature_0 = np.copy(features_cur)
+        feature_1 = np.copy(features_2)
+        pose_1 = np.copy(pose_2)
+        cv2.imshow(image_list[0].split('\\')[-2], image_2)
+        if cv2.waitKey(1) & 0xff == ord('q'):
+            break
+
+    cv2.destroyAllWindows()
+    if result_format == "ply":
+        to_ply(total_points, total_colors)
+    elif result_format == "obj":
+        to_obj(total_points, total_colors)
+
+# run("example/monument", "example/K.txt", "obj")

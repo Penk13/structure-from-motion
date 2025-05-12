@@ -1,0 +1,7 @@
+__pycache__/
+venv/
+
+images/
+result/
+result.obj
+result.ply
