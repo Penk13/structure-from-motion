@@ -33,10 +33,10 @@ def downscale_image(img, scale=2):
     return img
 
 
-def triangulation(point_2d_1, point_2d_2, projection_matrix_1, projection_matrix_2):
-    pt_cloud = cv2.triangulatePoints(point_2d_1, point_2d_2, projection_matrix_1.T, projection_matrix_2.T)
+def triangulation(projection_matrix_1, projection_matrix_2, point_2d_1, point_2d_2):
+    pt_cloud = cv2.triangulatePoints(projection_matrix_1, projection_matrix_2, point_2d_1.T, point_2d_2.T)
     # print(f"point cloud from triangulation:\n {pt_cloud}")
-    return projection_matrix_1.T, projection_matrix_2.T, (pt_cloud / pt_cloud[3])
+    return point_2d_1.T, point_2d_2.T, (pt_cloud / pt_cloud[3])
 
 
 def pnp(obj_point, image_point, K, dist_coeff, rot_vector, initial):
@@ -258,6 +258,7 @@ def run(img_dir: str, k_path: str, result_format: str):
     # t1 = t_0 + (R0 * t_rel)
     transform_matrix_1[:3, 3] = transform_matrix_0[:3, 3] + np.matmul(transform_matrix_0[:3, :3], tran_matrix.ravel())
 
+    # P = K.[R|t] ---> multiplication of K and [R|t] results in a projection matrix
     pose_1 = np.matmul(K, transform_matrix_1)
 
     feature_0, feature_1, points_3d = triangulation(pose_0, pose_1, feature_0, feature_1)
@@ -320,4 +321,4 @@ def run(img_dir: str, k_path: str, result_format: str):
     elif result_format == "obj":
         to_obj(total_points, total_colors)
 
-# run("example/monument", "example/K.txt", "obj")
+# run("example/monument", "example/K.txt", "ply")
