@@ -39,11 +39,10 @@ def triangulation(projection_matrix_1, projection_matrix_2, point_2d_1, point_2d
     return point_2d_1.T, point_2d_2.T, (pt_cloud / pt_cloud[3])
 
 
-def pnp(obj_point, image_point, K, dist_coeff, rot_vector, initial):
+def pnp(obj_point, image_point, K, dist_coeff, initial):
     if initial == 1:
         obj_point = obj_point[:, 0 ,:]
         image_point = image_point.T
-        rot_vector = rot_vector.T 
 
     try:
         # Try to solve PnP with RANSAC
@@ -53,7 +52,6 @@ def pnp(obj_point, image_point, K, dist_coeff, rot_vector, initial):
         if inlier is not None:
             image_point = image_point[inlier[:, 0]]
             obj_point = obj_point[inlier[:, 0]]
-            rot_vector = rot_vector[inlier[:, 0]]
             
     except cv2.error:
         # If PnP fails, return identity rotation and zero translation
@@ -62,7 +60,7 @@ def pnp(obj_point, image_point, K, dist_coeff, rot_vector, initial):
         tran_vector = np.zeros((3, 1))
         inlier = None
 
-    return rot_matrix, tran_vector, image_point, obj_point, rot_vector
+    return rot_matrix, tran_vector, image_point, obj_point
 
 
 def reprojection_error(obj_points, image_points, transform_matrix, K, homogenity):
@@ -267,7 +265,7 @@ def run(img_dir: str, k_path: str, result_format: str):
     feature_0, feature_1, points_3d = triangulation(pose_0, pose_1, feature_0, feature_1)
     error, points_3d = reprojection_error(points_3d, feature_1, transform_matrix_1, K, homogenity = 1)
         #ideally error < 1
-    _, _, feature_1, points_3d, _ = pnp(points_3d, feature_1, K, np.zeros((5, 1), dtype=np.float32), feature_0, initial=1)
+    _, _, feature_1, points_3d = pnp(points_3d, feature_1, K, np.zeros((5, 1), dtype=np.float32), initial=1)
     total_images = len(image_list) - 2 
     pose_array = np.hstack((np.hstack((pose_array, pose_0.ravel())), pose_1.ravel()))
     threshold = 0.5
@@ -284,9 +282,8 @@ def run(img_dir: str, k_path: str, result_format: str):
 
         cm_points_0, cm_points_1, cm_mask_0, cm_mask_1 = correspondences(feature_1, features_cur, features_2)
         cm_points_2 = features_2[cm_points_1]
-        cm_points_cur = features_cur[cm_points_1]
 
-        rot_matrix, tran_matrix, cm_points_2, points_3d, cm_points_cur = pnp(points_3d[cm_points_0], cm_points_2, K, np.zeros((5, 1), dtype=np.float32), cm_points_cur, initial = 0)
+        rot_matrix, tran_matrix, cm_points_2, points_3d = pnp(points_3d[cm_points_0], cm_points_2, K, np.zeros((5, 1), dtype=np.float32), initial = 0)
         # print(rot_matrix.shape)
         # print(tran_matrix.shape)
         transform_matrix_1 = np.hstack((rot_matrix, tran_matrix))
