@@ -73,6 +73,7 @@ def reprojection_error(obj_points, image_points, transform_matrix, K, homogenity
     if obj_points.size == 0:
         return float('inf'), obj_points  # Return high error if no points
 
+    # Extract rotation matrix and translation vector
     rot_matrix = transform_matrix[:3, :3]
     tran_vector = transform_matrix[:3, 3]
     rot_vector, _ = cv2.Rodrigues(rot_matrix)
@@ -81,19 +82,21 @@ def reprojection_error(obj_points, image_points, transform_matrix, K, homogenity
     if homogenity == 1:
         obj_points = cv2.convertPointsFromHomogeneous(obj_points.T)
     
-    # Reshape to (N, 1, 3) if necessary
+    # Reshape to (N, 1, 3) numpy array if necessary
     obj_points = np.asarray(obj_points).reshape(-1, 1, 3)
     
-    # Project points and handle potential failures
+    # Reproject 3D points to 2D image space
     image_points_calc, _ = cv2.projectPoints(obj_points, rot_vector, tran_vector, K, None)
     
     # Check if projection failed
     if image_points_calc is None:
         return float('inf'), obj_points
     
+    # Format / reshape output
     image_points_calc = np.float32(image_points_calc[:, 0, :])
     image_points = np.float32(image_points.T if homogenity == 1 else image_points)
     
+    # Calculate reprojection error
     total_error = cv2.norm(image_points_calc, image_points, cv2.NORM_L2)
     return total_error / len(image_points_calc), obj_points
 
