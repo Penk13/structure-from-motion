@@ -235,28 +235,23 @@ def run(image_directory: str, k_path: str, result_format: str):
     # Downscale the images using Gaussian pyramid and downscale camera intrinsic parameters.
     image_list, K = downscale_images_and_K(image_paths, K)
 
-    # ravel() ---> flattens array into a 1D array
-    pose_array = K.ravel()
-
     # This is transform matrix, represent [R|t] 
     # R is 3x3 matrix, t is 3x1 vector
     transform_matrix_0 = np.array(
         [[1, 0, 0, 0], 
          [0, 1, 0, 0], 
          [0, 0, 1, 0]])
-    # np.empty gives random values
     transform_matrix_1 = np.empty((3, 4))
 
-    # matmul = matrix multiplication
     # P = K.[R|t] ---> multiplication of K and [R|t] results in a projection matrix
-    pose_0 = np.matmul(K, transform_matrix_0)
-    pose_1 = np.empty((3, 4)) 
+    projection_matrix_0 = np.matmul(K, transform_matrix_0)
+    projection_matrix_1 = np.empty((3, 4)) 
 
     # numpy array to hold 3D points and colors
     total_points = np.zeros((1, 3))
     total_colors = np.zeros((1, 3))
 
-    # Read the first two images and reduce the size of the images using cv2.pyrDown
+    # Read the first two images
     image_0 = image_list[0]
     image_1 = image_list[1]
 
@@ -280,14 +275,13 @@ def run(image_directory: str, k_path: str, result_format: str):
     transform_matrix_1[:3, 3] = transform_matrix_0[:3, 3] + np.matmul(transform_matrix_0[:3, :3], tran_matrix.ravel())
 
     # P = K.[R|t] ---> multiplication of K and [R|t] results in a projection matrix
-    pose_1 = np.matmul(K, transform_matrix_1)
+    projection_matrix_1 = np.matmul(K, transform_matrix_1)
 
-    feature_0, feature_1, points_3d = triangulation(pose_0, pose_1, feature_0, feature_1)
+    feature_0, feature_1, points_3d = triangulation(projection_matrix_0, projection_matrix_1, feature_0, feature_1)
     error, points_3d = reprojection_error(points_3d, feature_1, transform_matrix_1, K, homogenity = 1)
         #ideally error < 1
     _, _, feature_1, points_3d = pnp(points_3d, feature_1, K, np.zeros((5, 1), dtype=np.float32), initial=1)
     total_images = len(image_list) - 2 
-    pose_array = np.hstack((np.hstack((pose_array, pose_0.ravel())), pose_1.ravel()))
     threshold = 0.5
 
     for i in tqdm(range(total_images)):
@@ -295,7 +289,7 @@ def run(image_directory: str, k_path: str, result_format: str):
         features_cur, features_2 = find_features(image_1, image_2)
 
         if i != 0:
-            feature_0, feature_1, points_3d = triangulation(pose_0, pose_1, feature_0, feature_1)
+            feature_0, feature_1, points_3d = triangulation(projection_matrix_0, projection_matrix_1, feature_0, feature_1)
             feature_1 = feature_1.T
             points_3d = cv2.convertPointsFromHomogeneous(points_3d.T)
             points_3d = points_3d[:, 0, :]
@@ -311,10 +305,9 @@ def run(image_directory: str, k_path: str, result_format: str):
 
         error, points_3d = reprojection_error(points_3d, cm_points_2, transform_matrix_1, K, homogenity = 0)
 
-        cm_mask_0, cm_mask_1, points_3d = triangulation(pose_1, pose_2, cm_mask_0, cm_mask_1)
+        cm_mask_0, cm_mask_1, points_3d = triangulation(projection_matrix_1, pose_2, cm_mask_0, cm_mask_1)
         error, points_3d = reprojection_error(points_3d, cm_mask_1, transform_matrix_1, K, homogenity = 1)
         print("Reprojection Error: ", error)
-        pose_array = np.hstack((pose_array, pose_2.ravel()))
 
         total_points = np.vstack((total_points, points_3d[:, 0, :]))
         points_left = np.array(cm_mask_1, dtype=np.int32)
@@ -322,7 +315,7 @@ def run(image_directory: str, k_path: str, result_format: str):
         total_colors = np.vstack((total_colors, color_vector)) 
 
         transform_matrix_0 = np.copy(transform_matrix_1)
-        pose_0 = np.copy(pose_1)
+        projection_matrix_0 = np.copy(projection_matrix_1)
         # plt.scatter(i, error)
         # plt.pause(0.05)
 
@@ -330,7 +323,7 @@ def run(image_directory: str, k_path: str, result_format: str):
         image_1 = np.copy(image_2)
         feature_0 = np.copy(features_cur)
         feature_1 = np.copy(features_2)
-        pose_1 = np.copy(pose_2)
+        projection_matrix_1 = np.copy(pose_2)
         cv2.imshow(image_paths[0].split('\\')[-2], image_2)
         if cv2.waitKey(1) & 0xff == ord('q'):
             break
