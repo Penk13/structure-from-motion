@@ -7,30 +7,56 @@ from tomlkit import boolean
 from tqdm import tqdm
 
 
-def image_loader(dir_path: str, k_path: str, scale: float = 2):
-    # load camera intrinsic parameters (K matrix)
+def load_images_and_K(dir_path, k_path):
+    """
+    Loads images from a directory and camera intrinsic parameters from a file.
+
+    Args:
+        dir_path (str): Path to the directory containing the images.
+        k_path (str): Path to the file containing the camera intrinsic parameters.
+
+    Returns:
+        image_paths (list[str]): List of paths to the images.
+        K (ndarray (3, 3)): The K matrix.
+    """
+
+    image_paths = [os.path.join(dir_path, i) for i in os.listdir(dir_path)]
+    print(image_paths)
+
     with open(k_path, "r") as f:
         lines = f.readlines()
         K = np.float32([i.strip().split(" ") for i in lines])
-        
-    img_list = [os.path.join(dir_path, i) for i in os.listdir(dir_path)]
-    print(img_list)
 
-    # Downscale instrinsic parameters
-    K[0, 0] /= scale
-    K[1, 1] /= scale
-    K[0, 2] /= scale
-    K[1, 2] /= scale
-
-    return img_list, K
+    return image_paths, K
 
 
-def downscale_image(img, scale=2):
-    # Downscale image by a factor of 2 using Gaussian pyramid
-    for _ in range(1, int(scale / 2) + 1):
-        img = cv2.pyrDown(img)
+def downscale_images_and_K(image_list, K, scale=2):
+    """
+    Downscale the images using Gaussian pyramid and downscale camera intrinsic parameters.
+
+    Args:
+        image_list (list[str]): List of paths to the images.
+        K (ndarray): Camera intrinsic parameters (K matrix).
+        scale (int, optional): Downscale factor. Defaults to 2.
+
+    Returns:
+        downscaled_image_list (list[ndarray]): List of downscaled images.
+        K (ndarray): Downscaled K matrix.
+    """
+
+    downscaled_image_list = []
+    for img in image_list:
+        img = cv2.imread(img)
+        for _ in range(1, int(scale / 2) + 1):
+            img = cv2.pyrDown(img)
+        downscaled_image_list.append(img)
+
+    K[0, 0] /= scale #fx
+    K[1, 1] /= scale #fy
+    K[0, 2] /= scale #cx
+    K[1, 2] /= scale #cy
     
-    return img
+    return downscaled_image_list, K
 
 
 def triangulation(projection_matrix_1, projection_matrix_2, point_2d_1, point_2d_2):
@@ -202,21 +228,15 @@ def find_features(image_0, image_1):
     return np.float32([key_points_0[m.queryIdx].pt for m in feature]), np.float32([key_points_1[m.trainIdx].pt for m in feature])
 
 
-def run(img_dir: str, k_path: str, result_format: str):
-    image_list, K = image_loader(img_dir, k_path)
-    '''
-    image_list = ['images/monument\\DSC_0351.JPG', 'images/monument\\DSC_0352.JPG', 'images/monument\\DSC_0353.JPG', ...]
-    K = array([[1.37974e+03, 0.00000e+00, 7.60345e+02],
-       [0.00000e+00, 1.38208e+03, 5.03405e+02],
-       [0.00000e+00, 0.00000e+00, 1.00000e+00]], dtype=float32)
-    '''
+def run(image_directory: str, k_path: str, result_format: str):
+    # Loads images from a directory and camera intrinsic parameters from a file.
+    image_paths, K = load_images_and_K(image_directory, k_path)
+
+    # Downscale the images using Gaussian pyramid and downscale camera intrinsic parameters.
+    image_list, K = downscale_images_and_K(image_paths, K)
 
     # ravel() ---> flattens array into a 1D array
     pose_array = K.ravel()
-    '''
-    pose_array = array([1.37974e+03, 0.00000e+00, 7.60345e+02, 0.00000e+00, 1.38208e+03,
-       5.03405e+02, 0.00000e+00, 0.00000e+00, 1.00000e+00], dtype=float32)
-    '''
 
     # This is transform matrix, represent [R|t] 
     # R is 3x3 matrix, t is 3x1 vector
@@ -237,8 +257,8 @@ def run(img_dir: str, k_path: str, result_format: str):
     total_colors = np.zeros((1, 3))
 
     # Read the first two images and reduce the size of the images using cv2.pyrDown
-    image_0 = downscale_image(cv2.imread(image_list[0]))
-    image_1 = downscale_image(cv2.imread(image_list[1]))
+    image_0 = image_list[0]
+    image_1 = image_list[1]
 
     # Find features in the first two images using SIFT and KNN
     feature_0, feature_1 = find_features(image_0, image_1)
@@ -271,7 +291,7 @@ def run(img_dir: str, k_path: str, result_format: str):
     threshold = 0.5
 
     for i in tqdm(range(total_images)):
-        image_2 = downscale_image(cv2.imread(image_list[i + 2]))
+        image_2 = image_list[i + 2]
         features_cur, features_2 = find_features(image_1, image_2)
 
         if i != 0:
@@ -311,7 +331,7 @@ def run(img_dir: str, k_path: str, result_format: str):
         feature_0 = np.copy(features_cur)
         feature_1 = np.copy(features_2)
         pose_1 = np.copy(pose_2)
-        cv2.imshow(image_list[0].split('\\')[-2], image_2)
+        cv2.imshow(image_paths[0].split('\\')[-2], image_2)
         if cv2.waitKey(1) & 0xff == ord('q'):
             break
 
@@ -321,4 +341,4 @@ def run(img_dir: str, k_path: str, result_format: str):
     elif result_format == "obj":
         to_obj(total_points, total_colors)
 
-# run("example/monument", "example/K.txt", "ply")
+run("example/monument", "example/K.txt", "ply")
