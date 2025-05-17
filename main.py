@@ -41,7 +41,7 @@ def downscale_images_and_K(image_list, K, scale=2):
 
     Returns:
         downscaled_image_list (list[ndarray]): List of downscaled images.
-        K (ndarray): Downscaled K matrix.
+        K (ndarray (3, 3)): Downscaled K matrix.
     """
 
     downscaled_image_list = []
@@ -202,8 +202,15 @@ def correspondences(img_points_1, img_points_2, img_points_3):
 
 def find_features(image_0, image_1):
     '''
-    Feature detection using the sift algorithm and KNN
-    return keypoints(features) of image1 and image2
+    Feature detection using the SIFT algorithm and KNN.
+
+    Args:
+        image_0 (ndarray): First image.
+        image_1 (ndarray): Second image.
+
+    Returns:
+        features_0 (ndarray (N, 2)): Keypoints(features) of image 0.
+        features_1 (ndarray (N, 2)): Keypoints(features) of image 1.
     '''
 
     # Initialize SIFT
@@ -219,13 +226,16 @@ def find_features(image_0, image_1):
     # BruteForce Matcher to compare descriptors
     bf = cv2.BFMatcher()
     # Find its 2 nearest neighbors for each descriptor in desc_0 and desc_1 based on Euclidean distance
+    # Filter matches based on Lowe's ratio
     matches = bf.knnMatch(desc_0, desc_1, k=2)
-    feature = []
-    for m, n in matches:
-        if m.distance < 0.70 * n.distance:
-            feature.append(m)
+    features_0 = []
+    features_1 = []
+    for best_match, second_best_match in matches:
+        if best_match.distance < 0.70 * second_best_match.distance:
+            features_0.append(key_points_0[best_match.queryIdx].pt)
+            features_1.append(key_points_1[best_match.trainIdx].pt)
 
-    return np.float32([key_points_0[m.queryIdx].pt for m in feature]), np.float32([key_points_1[m.trainIdx].pt for m in feature])
+    return np.float32(features_0), np.float32(features_1)
 
 
 def run(image_directory: str, k_path: str, result_format: str):
@@ -256,17 +266,17 @@ def run(image_directory: str, k_path: str, result_format: str):
     image_1 = image_list[1]
 
     # Find features in the first two images using SIFT and KNN
-    feature_0, feature_1 = find_features(image_0, image_1)
+    features_0, features_1 = find_features(image_0, image_1)
 
     # Find the essential matrix and filter the features (remove outliers)
-    essential_matrix, em_mask = cv2.findEssentialMat(feature_0, feature_1, K, method=cv2.RANSAC, prob=0.999, threshold=0.4, mask=None)
-    feature_0 = feature_0[em_mask.ravel() == 1]
-    feature_1 = feature_1[em_mask.ravel() == 1]
+    essential_matrix, em_mask = cv2.findEssentialMat(features_0, features_1, K, method=cv2.RANSAC, prob=0.999, threshold=0.4, mask=None)
+    features_0 = features_0[em_mask.ravel() == 1]
+    features_1 = features_1[em_mask.ravel() == 1]
 
     # Recover the pose and filter the features (remove outliers)
-    _, rot_matrix, tran_matrix, em_mask = cv2.recoverPose(essential_matrix, feature_0, feature_1, K)
-    feature_0 = feature_0[em_mask.ravel() > 0]
-    feature_1 = feature_1[em_mask.ravel() > 0]
+    _, rot_matrix, tran_matrix, em_mask = cv2.recoverPose(essential_matrix, features_0, features_1, K)
+    features_0 = features_0[em_mask.ravel() > 0]
+    features_1 = features_1[em_mask.ravel() > 0]
 
     # Update the transform matrix [R|t] using the recovered pose and [R|t]
     # R1 = R_rel * R0
@@ -277,10 +287,10 @@ def run(image_directory: str, k_path: str, result_format: str):
     # P = K.[R|t] ---> multiplication of K and [R|t] results in a projection matrix
     projection_matrix_1 = np.matmul(K, transform_matrix_1)
 
-    feature_0, feature_1, points_3d = triangulation(projection_matrix_0, projection_matrix_1, feature_0, feature_1)
-    error, points_3d = reprojection_error(points_3d, feature_1, transform_matrix_1, K, homogenity = 1)
+    features_0, features_1, points_3d = triangulation(projection_matrix_0, projection_matrix_1, features_0, features_1)
+    error, points_3d = reprojection_error(points_3d, features_1, transform_matrix_1, K, homogenity = 1)
         #ideally error < 1
-    _, _, feature_1, points_3d = pnp(points_3d, feature_1, K, np.zeros((5, 1), dtype=np.float32), initial=1)
+    _, _, features_1, points_3d = pnp(points_3d, features_1, K, np.zeros((5, 1), dtype=np.float32), initial=1)
     total_images = len(image_list) - 2 
     threshold = 0.5
 
@@ -289,12 +299,12 @@ def run(image_directory: str, k_path: str, result_format: str):
         features_cur, features_2 = find_features(image_1, image_2)
 
         if i != 0:
-            feature_0, feature_1, points_3d = triangulation(projection_matrix_0, projection_matrix_1, feature_0, feature_1)
-            feature_1 = feature_1.T
+            features_0, features_1, points_3d = triangulation(projection_matrix_0, projection_matrix_1, features_0, features_1)
+            features_1 = features_1.T
             points_3d = cv2.convertPointsFromHomogeneous(points_3d.T)
             points_3d = points_3d[:, 0, :]
 
-        cm_points_0, cm_points_1, cm_mask_0, cm_mask_1 = correspondences(feature_1, features_cur, features_2)
+        cm_points_0, cm_points_1, cm_mask_0, cm_mask_1 = correspondences(features_1, features_cur, features_2)
         cm_points_2 = features_2[cm_points_1]
 
         rot_matrix, tran_matrix, cm_points_2, points_3d = pnp(points_3d[cm_points_0], cm_points_2, K, np.zeros((5, 1), dtype=np.float32), initial = 0)
@@ -321,8 +331,8 @@ def run(image_directory: str, k_path: str, result_format: str):
 
         image_0 = np.copy(image_1)
         image_1 = np.copy(image_2)
-        feature_0 = np.copy(features_cur)
-        feature_1 = np.copy(features_2)
+        features_0 = np.copy(features_cur)
+        features_1 = np.copy(features_2)
         projection_matrix_1 = np.copy(pose_2)
         cv2.imshow(image_paths[0].split('\\')[-2], image_2)
         if cv2.waitKey(1) & 0xff == ord('q'):
