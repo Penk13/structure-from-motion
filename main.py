@@ -269,20 +269,20 @@ def run(image_directory: str, k_path: str, result_format: str):
     features_0, features_1 = find_features(image_0, image_1)
 
     # Find the essential matrix and filter the features (remove outliers)
-    essential_matrix, em_mask = cv2.findEssentialMat(features_0, features_1, K, method=cv2.RANSAC, prob=0.999, threshold=0.4, mask=None)
-    features_0 = features_0[em_mask.ravel() == 1]
-    features_1 = features_1[em_mask.ravel() == 1]
+    essential_matrix, inlier_mask = cv2.findEssentialMat(features_0, features_1, K, method=cv2.RANSAC, prob=0.999, threshold=0.4, mask=None)
+    features_0 = features_0[inlier_mask.ravel() == 1]
+    features_1 = features_1[inlier_mask.ravel() == 1]
 
     # Recover the pose and filter the features (remove outliers)
-    _, rot_matrix, tran_matrix, em_mask = cv2.recoverPose(essential_matrix, features_0, features_1, K)
-    features_0 = features_0[em_mask.ravel() > 0]
-    features_1 = features_1[em_mask.ravel() > 0]
+    _, rotation_matrix, translation_matrix, inlier_mask = cv2.recoverPose(essential_matrix, features_0, features_1, K)
+    features_0 = features_0[inlier_mask.ravel() > 0]
+    features_1 = features_1[inlier_mask.ravel() > 0]
 
-    # Update the transform matrix [R|t] using the recovered pose and [R|t]
-    # R1 = R_rel * R0
-    transform_matrix_1[:3, :3] = np.matmul(rot_matrix, transform_matrix_0[:3, :3])
-    # t1 = t_0 + (R0 * t_rel)
-    transform_matrix_1[:3, 3] = transform_matrix_0[:3, 3] + np.matmul(transform_matrix_0[:3, :3], tran_matrix.ravel())
+    # Update the transform matrix [R|t] using the recovered pose
+    # R1 = R_relative * R0
+    transform_matrix_1[:3, :3] = np.matmul(rotation_matrix, transform_matrix_0[:3, :3])
+    # t1 = t_0 + (R0 * t_relative)
+    transform_matrix_1[:3, 3] = transform_matrix_0[:3, 3] + np.matmul(transform_matrix_0[:3, :3], translation_matrix.ravel())
 
     # P = K.[R|t] ---> multiplication of K and [R|t] results in a projection matrix
     projection_matrix_1 = np.matmul(K, transform_matrix_1)
