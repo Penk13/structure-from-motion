@@ -59,10 +59,24 @@ def downscale_images_and_K(image_list, K, scale=2):
     return downscaled_image_list, K
 
 
-def triangulation(projection_matrix_1, projection_matrix_2, point_2d_1, point_2d_2):
-    pt_cloud = cv2.triangulatePoints(projection_matrix_1, projection_matrix_2, point_2d_1.T, point_2d_2.T)
-    # print(f"point cloud from triangulation:\n {pt_cloud}")
-    return point_2d_1.T, point_2d_2.T, (pt_cloud / pt_cloud[3])
+def triangulation(projection_matrix_A, projection_matrix_B, features_A, features_B):
+    """
+    Compute the 3D point cloud from two sets of 2D image points using triangulation.
+
+    Args:
+        projection_matrix_A (ndarray (3, 4)): Projection matrix for the first camera.
+        projection_matrix_B (ndarray (3, 4)): Projection matrix for the second camera.
+        features_A (ndarray (N, 2)): 2D image points in the first image.
+        features_B (ndarray (N, 2)): 2D image points in the second image.
+
+    Returns:
+        pt_cloud (ndarray (N, 3)): 3D point cloud.
+    """
+
+    pt_cloud = cv2.triangulatePoints(projection_matrix_A, projection_matrix_B, features_A.T, features_B.T)
+    pt_cloud = pt_cloud / pt_cloud[3]
+
+    return pt_cloud
 
 
 def pnp(obj_point, image_point, K, dist_coeff, initial):
@@ -287,10 +301,12 @@ def run(image_directory: str, k_path: str, result_format: str):
     # P = K.[R|t] ---> multiplication of K and [R|t] results in a projection matrix
     projection_matrix_1 = np.matmul(K, transform_matrix_1)
 
-    features_0, features_1, points_3d = triangulation(projection_matrix_0, projection_matrix_1, features_0, features_1)
-    error, points_3d = reprojection_error(points_3d, features_1, transform_matrix_1, K, homogenity = 1)
-        #ideally error < 1
-    _, _, features_1, points_3d = pnp(points_3d, features_1, K, np.zeros((5, 1), dtype=np.float32), initial=1)
+    # Triangulate points: find 3D points from corresponding 2D points
+    points_3d = triangulation(projection_matrix_0, projection_matrix_1, features_0, features_1)
+    
+    error, points_3d = reprojection_error(points_3d, features_1.T, transform_matrix_1, K, homogenity = 1)
+
+    _, _, features_1, points_3d = pnp(points_3d, features_1.T, K, np.zeros((5, 1), dtype=np.float32), initial=1)
     total_images = len(image_list) - 2 
     threshold = 0.5
 
@@ -299,8 +315,7 @@ def run(image_directory: str, k_path: str, result_format: str):
         features_cur, features_2 = find_features(image_1, image_2)
 
         if i != 0:
-            features_0, features_1, points_3d = triangulation(projection_matrix_0, projection_matrix_1, features_0, features_1)
-            features_1 = features_1.T
+            points_3d = triangulation(projection_matrix_0, projection_matrix_1, features_0, features_1)
             points_3d = cv2.convertPointsFromHomogeneous(points_3d.T)
             points_3d = points_3d[:, 0, :]
 
@@ -315,12 +330,12 @@ def run(image_directory: str, k_path: str, result_format: str):
 
         error, points_3d = reprojection_error(points_3d, cm_points_2, transform_matrix_1, K, homogenity = 0)
 
-        cm_mask_0, cm_mask_1, points_3d = triangulation(projection_matrix_1, pose_2, cm_mask_0, cm_mask_1)
-        error, points_3d = reprojection_error(points_3d, cm_mask_1, transform_matrix_1, K, homogenity = 1)
+        points_3d = triangulation(projection_matrix_1, pose_2, cm_mask_0, cm_mask_1)
+        error, points_3d = reprojection_error(points_3d, cm_mask_1.T, transform_matrix_1, K, homogenity = 1)
         print("Reprojection Error: ", error)
 
         total_points = np.vstack((total_points, points_3d[:, 0, :]))
-        points_left = np.array(cm_mask_1, dtype=np.int32)
+        points_left = np.array(cm_mask_1.T, dtype=np.int32)
         color_vector = np.array([image_2[l[1], l[0]] for l in points_left.T])
         total_colors = np.vstack((total_colors, color_vector)) 
 
