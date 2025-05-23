@@ -70,7 +70,7 @@ def triangulation(projection_matrix_A, projection_matrix_B, features_A, features
         features_B (ndarray (N, 2)): 2D image points in the second image.
 
     Returns:
-        pt_cloud (ndarray (N, 3)): 3D point cloud.
+        pt_cloud (ndarray (N, 4)): 3D point cloud.
     """
 
     pt_cloud = cv2.triangulatePoints(projection_matrix_A, projection_matrix_B, features_A.T, features_B.T)
@@ -103,40 +103,51 @@ def pnp(obj_point, image_point, K, dist_coeff, initial):
     return rot_matrix, tran_vector, image_point, obj_point
 
 
-def reprojection_error(obj_points, image_points, transform_matrix, K, homogenity):
-    '''
-    Calculates the reprojection error.
-    '''
-    # Handle empty object points
-    if obj_points.size == 0:
-        return float('inf'), obj_points  # Return high error if no points
+def reprojection_error(points_3d, features, transform_matrix, K, homogenity):
+    """
+    Calculate the reprojection error between 3D points and their corresponding 2D features.
 
-    # Extract rotation matrix and translation vector
+    Args:
+        points_3d (ndarray (4, N) or (N, 3)): Array of 3D points.
+        features (ndarray (2, N) or (N, 2)): Array of corresponding 2D features.
+        transform_matrix (ndarray (3,4)): Transformation matrix [R|t].
+        K (ndarray (3,3)): Camera intrinsic matrix.
+        homogenity (int): Indicator for homogeneous coordinates.
+
+    Returns:
+        error (float): The mean reprojection error.
+        points_3d (ndarray (N, 1, 3)): The (possibly transformed) 3D points.
+    """
+    # Handle empty object points
+    if points_3d.size == 0:
+        return float('inf'), points_3d  # Return high error if no points
+
+    # Extract rotation matrix and translation vector from transformation matrix
     rot_matrix = transform_matrix[:3, :3]
     tran_vector = transform_matrix[:3, 3]
     rot_vector, _ = cv2.Rodrigues(rot_matrix)
     
     # Convert to homogeneous coordinates if needed
     if homogenity == 1:
-        obj_points = cv2.convertPointsFromHomogeneous(obj_points.T)
+        points_3d = cv2.convertPointsFromHomogeneous(points_3d.T)
     
-    # Reshape to (N, 1, 3) numpy array if necessary
-    obj_points = np.asarray(obj_points).reshape(-1, 1, 3)
+    # Ensure points_3d is reshaped to (N, 1, 3) for cv2.projectPoints
+    points_3d = np.asarray(points_3d).reshape(-1, 1, 3)
     
-    # Reproject 3D points to 2D image space
-    image_points_calc, _ = cv2.projectPoints(obj_points, rot_vector, tran_vector, K, None)
+    # Reproject 3D points to 2D image space using the camera matrix
+    features_calc, _ = cv2.projectPoints(points_3d, rot_vector, tran_vector, K, None)
     
     # Check if projection failed
-    if image_points_calc is None:
-        return float('inf'), obj_points
+    if features_calc is None:
+        return float('inf'), points_3d
     
-    # Format / reshape output
-    image_points_calc = np.float32(image_points_calc[:, 0, :])
-    image_points = np.float32(image_points.T if homogenity == 1 else image_points)
+    # Reshape calculated features for error computation
+    features_calc = np.float32(features_calc[:, 0, :])
+    features = np.float32(features.T if homogenity == 1 else features)
     
-    # Calculate reprojection error
-    total_error = cv2.norm(image_points_calc, image_points, cv2.NORM_L2)
-    return total_error / len(image_points_calc), obj_points
+    # Calculate and return the reprojection error
+    error = cv2.norm(features_calc, features, cv2.NORM_L2)
+    return error / len(features_calc), points_3d
 
 
 def to_ply(point_clouds, colors):
@@ -304,6 +315,7 @@ def run(image_directory: str, k_path: str, result_format: str):
     # Triangulate points: find 3D points from corresponding 2D points
     points_3d = triangulation(projection_matrix_0, projection_matrix_1, features_0, features_1)
     
+    # Calculate reprojection error
     error, points_3d = reprojection_error(points_3d, features_1.T, transform_matrix_1, K, homogenity = 1)
 
     _, _, features_1, points_3d = pnp(points_3d, features_1.T, K, np.zeros((5, 1), dtype=np.float32), initial=1)
