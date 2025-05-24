@@ -79,28 +79,45 @@ def triangulation(projection_matrix_A, projection_matrix_B, features_A, features
     return pt_cloud
 
 
-def pnp(obj_point, image_point, K, dist_coeff, initial):
+def pnp(points_3d, features, K, dist_coeff, initial):
+    """
+    Solve the Perspective-n-Point (PnP) problem.
+
+    Args:
+        points_3d (ndarray (N, 1, 3)): Array of 3D points.
+        features (ndarray (2, N) or (N, 2)): Array of corresponding 2D features.
+        K (ndarray (3, 3)): Camera intrinsic matrix.
+        dist_coeff (ndarray (5, 1)): Distortion coefficients.
+        initial (int): Initial flag.
+
+    Returns:
+        rotation_matrix (ndarray (3, 3)): Rotation matrix.
+        translation_vector (ndarray (3, 1)): Translation vector.
+        features (ndarray (N, 2)): Inlier features.
+        points_3d (ndarray (N, 3)): Inlier 3D points.
+    """
+
     if initial == 1:
-        obj_point = obj_point[:, 0 ,:]
-        image_point = image_point.T
+        points_3d = points_3d[:, 0 ,:]
+        features = features.T
 
     try:
         # Try to solve PnP with RANSAC
-        _, rot_vector_calc, tran_vector, inlier = cv2.solvePnPRansac(obj_point, image_point, K, dist_coeff, cv2.SOLVEPNP_ITERATIVE)
-        rot_matrix, _ = cv2.Rodrigues(rot_vector_calc)
+        _, rotation_vector_calc, translation_vector, inlier = cv2.solvePnPRansac(points_3d, features, K, dist_coeff, cv2.SOLVEPNP_ITERATIVE)
+        rotation_matrix, _ = cv2.Rodrigues(rotation_vector_calc)
         
         if inlier is not None:
-            image_point = image_point[inlier[:, 0]]
-            obj_point = obj_point[inlier[:, 0]]
+            features = features[inlier[:, 0]]
+            points_3d = points_3d[inlier[:, 0]]
             
     except cv2.error:
         # If PnP fails, return identity rotation and zero translation
         print("Warning: PnP failed, returning default pose")
-        rot_matrix = np.eye(3)
-        tran_vector = np.zeros((3, 1))
+        rotation_matrix = np.eye(3)
+        translation_vector = np.zeros((3, 1))
         inlier = None
 
-    return rot_matrix, tran_vector, image_point, obj_point
+    return rotation_matrix, translation_vector, features, points_3d
 
 
 def reprojection_error(points_3d, features, transform_matrix, K, homogenity):
@@ -318,6 +335,7 @@ def run(image_directory: str, k_path: str, result_format: str):
     # Calculate reprojection error
     error, points_3d = reprojection_error(points_3d, features_1.T, transform_matrix_1, K, homogenity = 1)
 
+    # Use PnP to refine the pose
     _, _, features_1, points_3d = pnp(points_3d, features_1.T, K, np.zeros((5, 1), dtype=np.float32), initial=1)
     total_images = len(image_list) - 2 
     threshold = 0.5
