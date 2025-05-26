@@ -215,30 +215,49 @@ def to_obj(point_clouds, colors):
  
 
 def correspondences(img_points_1, img_points_2, img_points_3):
-    cr_points_1 = []
-    cr_points_2 = []
+    """
+    Finds matching points between three images and returns their indices and unmatched points.
 
+    Args:
+        img_points_1 (ndarray (N,2)): Array of 2D points in the first image.
+        img_points_2 (ndarray (N,2)): Array of 2D points in the second image.
+        img_points_3 (ndarray (N,2)): Array of 2D points in the third image.
+
+    Returns:
+        matched_idx_1 (ndarray (N)): Array of indices of the points in the first image.
+        matched_idx_2 (ndarray (N)): Array of indices of the points in the second image.
+        unmatched_points_image2 (ndarray (N,2)): Array of 2D points in the second image that are not in the first image.
+        unmatched_points_image3 (ndarray (N,2)): Array of 2D points in the third image that are not in the first image.
+    """
+
+    # Initialize arrays to store the matching points
+    matched_idx_1 = []
+    matched_idx_2 = []
+
+    # For each point in the first image, find the matching point in the second image
     for i in range(img_points_1.shape[0]):
         a = np.where(img_points_2 == img_points_1[i, :])
         if a[0].size != 0:
-            cr_points_1.append(i)
-            cr_points_2.append(a[0][0])
+            matched_idx_1.append(i)
+            matched_idx_2.append(a[0][0])
 
-    mask_array_1 = np.ma.array(img_points_2, mask=False)
-    mask_array_1.mask[cr_points_2] = True
-    mask_array_1 = mask_array_1.compressed()
-    mask_array_1 = mask_array_1.reshape(int(mask_array_1.shape[0] / 2), 2)
+    # Create a mask array of the points in the second image that are not in the first image
+    unmatched_points_image2 = np.ma.array(img_points_2, mask=False)
+    unmatched_points_image2.mask[matched_idx_2] = True
+    unmatched_points_image2 = unmatched_points_image2.compressed()
+    unmatched_points_image2 = unmatched_points_image2.reshape(int(unmatched_points_image2.shape[0] / 2), 2)
 
-    mask_array_2 = np.ma.array(img_points_3, mask=False)
-    mask_array_2.mask[cr_points_2] = True
-    mask_array_2 = mask_array_2.compressed()
-    mask_array_2 = mask_array_2.reshape(int(mask_array_2.shape[0] / 2), 2)
+    # Create a mask array of the points in the third image that are not in the first image
+    unmatched_points_image3 = np.ma.array(img_points_3, mask=False)
+    unmatched_points_image3.mask[matched_idx_2] = True
+    unmatched_points_image3 = unmatched_points_image3.compressed()
+    unmatched_points_image3 = unmatched_points_image3.reshape(int(unmatched_points_image3.shape[0] / 2), 2)
 
     return (
-        np.array(cr_points_1, dtype=np.int32),
-        np.array(cr_points_2, dtype=np.int32),
-        mask_array_1,
-        mask_array_2
+        np.array(matched_idx_1, dtype=np.int32),
+        np.array(matched_idx_2, dtype=np.int32),
+        unmatched_points_image2,
+        unmatched_points_image3
     )
 
 
@@ -349,10 +368,10 @@ def run(image_directory: str, k_path: str, result_format: str):
             points_3d = cv2.convertPointsFromHomogeneous(points_3d.T)
             points_3d = points_3d[:, 0, :]
 
-        cm_points_0, cm_points_1, cm_mask_0, cm_mask_1 = correspondences(features_1, features_cur, features_2)
-        cm_points_2 = features_2[cm_points_1]
+        matched_idx_1, matched_idx_2, unmatched_points_image2, unmatched_points_image3 = correspondences(features_1, features_cur, features_2)
+        cm_points_2 = features_2[matched_idx_2]
 
-        rot_matrix, tran_matrix, cm_points_2, points_3d = pnp(points_3d[cm_points_0], cm_points_2, K, np.zeros((5, 1), dtype=np.float32), initial = 0)
+        rot_matrix, tran_matrix, cm_points_2, points_3d = pnp(points_3d[matched_idx_1], cm_points_2, K, np.zeros((5, 1), dtype=np.float32), initial = 0)
         # print(rot_matrix.shape)
         # print(tran_matrix.shape)
         transform_matrix_1 = np.hstack((rot_matrix, tran_matrix))
@@ -360,12 +379,12 @@ def run(image_directory: str, k_path: str, result_format: str):
 
         error, points_3d = reprojection_error(points_3d, cm_points_2, transform_matrix_1, K, homogenity = 0)
 
-        points_3d = triangulation(projection_matrix_1, pose_2, cm_mask_0, cm_mask_1)
-        error, points_3d = reprojection_error(points_3d, cm_mask_1.T, transform_matrix_1, K, homogenity = 1)
+        points_3d = triangulation(projection_matrix_1, pose_2, unmatched_points_image2, unmatched_points_image3)
+        error, points_3d = reprojection_error(points_3d, unmatched_points_image3.T, transform_matrix_1, K, homogenity = 1)
         print("Reprojection Error: ", error)
 
         total_points = np.vstack((total_points, points_3d[:, 0, :]))
-        points_left = np.array(cm_mask_1.T, dtype=np.int32)
+        points_left = np.array(unmatched_points_image3.T, dtype=np.int32)
         color_vector = np.array([image_2[l[1], l[0]] for l in points_left.T])
         total_colors = np.vstack((total_colors, color_vector)) 
 
