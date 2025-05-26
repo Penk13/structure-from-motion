@@ -45,7 +45,8 @@ class StructureFromMotion:
         Loads images from a directory and camera intrinsic parameters from a file.
         
         Returns:
-            tuple: (image_paths, K) where image_paths is list of image paths and K is camera matrix
+            image_paths (list[str]): List of paths to the images.
+            K (ndarray (3, 3)): The K matrix.
         """
         image_paths = [os.path.join(self.image_directory, i) for i in os.listdir(self.image_directory)]
         print(f"Loaded {len(image_paths)} images: {image_paths}")
@@ -61,7 +62,8 @@ class StructureFromMotion:
         Downscale the images using Gaussian pyramid and adjust camera intrinsic parameters.
         
         Returns:
-            tuple: (downscaled_image_list, adjusted_K)
+            downscaled_image_list (list[ndarray]): List of downscaled images.
+            K_adjusted (ndarray (3, 3)): Downscaled K matrix.
         """
         downscaled_image_list = []
         
@@ -90,7 +92,8 @@ class StructureFromMotion:
             image_1 (ndarray): Second image
             
         Returns:
-            tuple: (features_0, features_1) - matched feature points in both images
+            features_0 (ndarray (N, 2)): Keypoints(features) of image 0.
+            features_1 (ndarray (N, 2)): Keypoints(features) of image 1.
         """
         # Initialize SIFT
         sift = cv2.SIFT_create()
@@ -119,13 +122,13 @@ class StructureFromMotion:
         Compute 3D point cloud from two sets of 2D image points using triangulation.
         
         Args:
-            projection_matrix_A (ndarray): Projection matrix for first camera
-            projection_matrix_B (ndarray): Projection matrix for second camera
-            features_A (ndarray): 2D points in first image
-            features_B (ndarray): 2D points in second image
+            projection_matrix_A (ndarray (3, 4)): Projection matrix for first camera
+            projection_matrix_B (ndarray (3, 4)): Projection matrix for second camera
+            features_A (ndarray (N, 2)): 2D points in first image
+            features_B (ndarray (N, 2)): 2D points in second image
             
         Returns:
-            ndarray: 3D point cloud in homogeneous coordinates
+            pt_cloud (ndarray (N, 4)): 3D point cloud.
         """
         pt_cloud = cv2.triangulatePoints(projection_matrix_A, projection_matrix_B, 
                                        features_A.T, features_B.T)
@@ -138,14 +141,17 @@ class StructureFromMotion:
         Solve the Perspective-n-Point (PnP) problem.
         
         Args:
-            points_3d (ndarray): Array of 3D points
-            features (ndarray): Array of corresponding 2D features
-            K (ndarray): Camera intrinsic matrix
-            dist_coeff (ndarray): Distortion coefficients
+            points_3d (ndarray (N, 1, 3)): Array of 3D points
+            features (ndarray (2, N) or (N, 2)): Array of corresponding 2D features
+            K (ndarray (3, 3)): Camera intrinsic matrix
+            dist_coeff (ndarray (5, 1)): Distortion coefficients
             initial (int): Initial flag
             
         Returns:
-            tuple: (rotation_matrix, translation_vector, inlier_features, inlier_points_3d)
+            rotation_matrix (ndarray (3, 3)): Rotation matrix.
+            translation_vector (ndarray (3, 1)): Translation vector.
+            features (ndarray (N, 2)): Inlier features.
+            points_3d (ndarray (N, 3)): Inlier 3D points.
         """
         if initial == 1:
             points_3d = points_3d[:, 0, :]
@@ -174,14 +180,15 @@ class StructureFromMotion:
         Calculate reprojection error between 3D points and their corresponding 2D features.
         
         Args:
-            points_3d (ndarray): Array of 3D points
-            features (ndarray): Array of corresponding 2D features
-            transform_matrix (ndarray): Transformation matrix [R|t]
-            K (ndarray): Camera intrinsic matrix
+            points_3d (ndarray (4, N) or (N, 3)): Array of 3D points
+            features (ndarray (2, N) or (N, 2)): Array of corresponding 2D features
+            transform_matrix (ndarray (3, 4)): Transformation matrix [R|t]
+            K (ndarray (3, 3)): Camera intrinsic matrix
             homogenity (int): Indicator for homogeneous coordinates
             
         Returns:
-            tuple: (error, points_3d) - mean reprojection error and processed 3D points
+            error (float): The mean reprojection error.
+            points_3d (ndarray (N, 1, 3)): The (possibly transformed) 3D points.
         """
         if points_3d.size == 0:
             return float('inf'), points_3d
@@ -217,12 +224,15 @@ class StructureFromMotion:
         Find matching points between three images and return their indices and unmatched points.
         
         Args:
-            img_points_1 (ndarray): 2D points in first image
-            img_points_2 (ndarray): 2D points in second image
-            img_points_3 (ndarray): 2D points in third image
+            img_points_1 (ndarray (N,2)): 2D points in first image
+            img_points_2 (ndarray (N,2)): 2D points in second image
+            img_points_3 (ndarray (N,2)): 2D points in third image
             
         Returns:
-            tuple: (matched_idx_1, matched_idx_2, unmatched_points_image2, unmatched_points_image3)
+            matched_idx_1 (ndarray (N)): Array of indices of the points in the first image.
+            matched_idx_2 (ndarray (N)): Array of indices of the points in the second image.
+            unmatched_points_image2 (ndarray (N,2)): Array of 2D points in the second image that are not in the first image.
+            unmatched_points_image3 (ndarray (N,2)): Array of 2D points in the third image that are not in the first image.
         """
         matched_idx_1 = []
         matched_idx_2 = []
@@ -260,12 +270,14 @@ class StructureFromMotion:
             tuple: Initial camera matrices, features, and 3D points
         """
         # Initialize transform matrices
+        # Transform matrix represents rotation and translation [R|t]
         transform_matrix_0 = np.array([[1, 0, 0, 0], 
                                      [0, 1, 0, 0], 
                                      [0, 0, 1, 0]])
         transform_matrix_1 = np.empty((3, 4))
         
         # Create projection matrices
+        # Projection matrix represents K.[R|t]
         projection_matrix_0 = np.matmul(self.K, transform_matrix_0)
         projection_matrix_1 = np.empty((3, 4))
         
@@ -273,7 +285,7 @@ class StructureFromMotion:
         image_0 = self.image_list[0]
         image_1 = self.image_list[1]
         
-        # Find features
+        # Find features between first two images using SIFT and KNN
         features_0, features_1 = self.find_features(image_0, image_1)
         
         # Find essential matrix and filter features
@@ -290,14 +302,16 @@ class StructureFromMotion:
         features_1 = features_1[inlier_mask.ravel() > 0]
         
         # Update transform matrix
+        # R1 = R_relative * R0
         transform_matrix_1[:3, :3] = np.matmul(rotation_matrix, transform_matrix_0[:3, :3])
+        # t1 = t_0 + (R0 * t_relative)
         transform_matrix_1[:3, 3] = (transform_matrix_0[:3, 3] + 
                                    np.matmul(transform_matrix_0[:3, :3], translation_matrix.ravel()))
         
         # Update projection matrix
         projection_matrix_1 = np.matmul(self.K, transform_matrix_1)
         
-        # Triangulate points
+        # Triangulate points: find 3D points from corresponding 2D points
         points_3d = self.triangulation(projection_matrix_0, projection_matrix_1, features_0, features_1)
         
         # Calculate and refine using PnP
@@ -403,16 +417,16 @@ class StructureFromMotion:
         verts = verts[indx]
         
         ply_header = '''ply
-format ascii 1.0
-element vertex %(vert_num)d
-property float x
-property float y
-property float z
-property uchar blue
-property uchar green
-property uchar red
-end_header
-'''
+            format ascii 1.0
+            element vertex %(vert_num)d
+            property float x
+            property float y
+            property float z
+            property uchar blue
+            property uchar green
+            property uchar red
+            end_header
+            '''
         
         with open(filename, 'w') as f:
             f.write(ply_header % dict(vert_num=len(verts)))
@@ -443,7 +457,7 @@ end_header
             for v in verts:
                 f.write(f"v {v[0]:.6f} {v[1]:.6f} {v[2]:.6f} {int(v[3])} {int(v[4])} {int(v[5])}\n")
     
-    def run(self, result_format="ply", output_filename=None):
+    def run(self, result_format, output_filename=None):
         """
         Run the complete Structure from Motion pipeline.
         
@@ -474,7 +488,7 @@ end_header
 # Example usage
 if __name__ == "__main__":
     # Create SfM instance
-    sfm = StructureFromMotion("images/fountain-P11", "result/fountain-P11/K.txt")
+    sfm = StructureFromMotion("example/monument", "example/K.txt")
     
     # Run reconstruction and export to PLY
     sfm.run("ply")
