@@ -6,9 +6,9 @@ import queue
 import os
 import tempfile
 import shutil
-import cv2  # Requires opencv-python package
+import cv2
 
-from main import run
+from core import StructureFromMotion
 
 class SFMApp(tk.Tk):
     def __init__(self):
@@ -189,7 +189,8 @@ class SFMApp(tk.Tk):
                 input_path = self.temp_frame_dir
 
             # Run main SFM process with either image dir or temp frame dir
-            run(input_path, k_path, result_format)
+            sfm = StructureFromMotion(input_path, k_path)
+            sfm.run(result_format)
             self.output_queue.put("\nProcessing completed successfully!\n")
             
         except Exception as e:
