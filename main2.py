@@ -334,62 +334,71 @@ class StructureFromMotion:
         (transform_matrix_0, transform_matrix_1, projection_matrix_0, projection_matrix_1,
          image_0, image_1, features_0, features_1, points_3d) = self._initialize_first_two_cameras()
         
-        total_images = len(self.image_list) - 2
+        # Initialize previous and current camera matrices
+        prev_transform_matrix = transform_matrix_0
+        current_transform_matrix = transform_matrix_1
+        prev_projection_matrix = projection_matrix_0
+        current_projection_matrix = projection_matrix_1
+        prev_image = image_0
+        current_image = image_1
+        prev_features = features_0
+        current_features = features_1
         
         # Process remaining images
-        for i in tqdm(range(total_images), desc="Processing images"):
-            image_2 = self.image_list[i + 2]
-            features_cur, features_2 = self.find_features(image_1, image_2)
+        remaining_images_count = len(self.image_list) - 2
+        for image_idx in tqdm(range(remaining_images_count), desc="Processing images"):
+            next_image = self.image_list[image_idx + 2]
+            current_to_next_features, next_features = self.find_features(current_image, next_image)
             
-            if i != 0:
-                points_3d = self.triangulation(projection_matrix_0, projection_matrix_1, features_0, features_1)
+            if image_idx != 0:
+                points_3d = self.triangulation(prev_projection_matrix, current_projection_matrix, prev_features, current_features)
                 points_3d = cv2.convertPointsFromHomogeneous(points_3d.T)
                 points_3d = points_3d[:, 0, :]
             
             # Find correspondences
-            matched_idx_1, matched_idx_2, unmatched_points_image2, unmatched_points_image3 = \
-                self.find_correspondences(features_1, features_cur, features_2)
-            cm_points_2 = features_2[matched_idx_2]
+            matched_prev_idx, matched_current_idx, unmatched_current_points, unmatched_next_points = \
+                self.find_correspondences(current_features, current_to_next_features, next_features)
+            corresponding_next_points = next_features[matched_current_idx]
             
-            # Solve PnP for current camera
-            rot_matrix, tran_matrix, cm_points_2, points_3d = self.solve_pnp(
-                points_3d[matched_idx_1], cm_points_2, self.K, 
+            # Solve PnP for next camera
+            rot_matrix, tran_matrix, corresponding_next_points, points_3d = self.solve_pnp(
+                points_3d[matched_prev_idx], corresponding_next_points, self.K, 
                 np.zeros((5, 1), dtype=np.float32), initial=0)
             
-            transform_matrix_1 = np.hstack((rot_matrix, tran_matrix))
-            pose_2 = np.matmul(self.K, transform_matrix_1)
+            current_transform_matrix = np.hstack((rot_matrix, tran_matrix))
+            next_projection_matrix = np.matmul(self.K, current_transform_matrix)
             
             # Calculate reprojection error
             error, points_3d = self.calculate_reprojection_error(
-                points_3d, cm_points_2, transform_matrix_1, self.K, homogenity=0)
+                points_3d, corresponding_next_points, current_transform_matrix, self.K, homogenity=0)
             
             # Triangulate new points
-            points_3d = self.triangulation(projection_matrix_1, pose_2, 
-                                         unmatched_points_image2, unmatched_points_image3)
+            points_3d = self.triangulation(current_projection_matrix, next_projection_matrix, 
+                                         unmatched_current_points, unmatched_next_points)
             error, points_3d = self.calculate_reprojection_error(
-                points_3d, unmatched_points_image3.T, transform_matrix_1, self.K, homogenity=1)
+                points_3d, unmatched_next_points.T, current_transform_matrix, self.K, homogenity=1)
             
             if show_progress:
-                print(f"Image {i+3}/{len(self.image_list)} - Reprojection Error: {error:.4f}")
+                print(f"Image {image_idx+3}/{len(self.image_list)} - Reprojection Error: {error:.4f}")
             
             # Store results
             self.total_points = np.vstack((self.total_points, points_3d[:, 0, :]))
-            points_left = np.array(unmatched_points_image3.T, dtype=np.int32)
-            color_vector = np.array([image_2[l[1], l[0]] for l in points_left.T])
+            next_image_points = np.array(unmatched_next_points.T, dtype=np.int32)
+            color_vector = np.array([next_image[point[1], point[0]] for point in next_image_points.T])
             self.total_colors = np.vstack((self.total_colors, color_vector))
             
             # Update for next iteration
-            transform_matrix_0 = np.copy(transform_matrix_1)
-            projection_matrix_0 = np.copy(projection_matrix_1)
-            image_0 = np.copy(image_1)
-            image_1 = np.copy(image_2)
-            features_0 = np.copy(features_cur)
-            features_1 = np.copy(features_2)
-            projection_matrix_1 = np.copy(pose_2)
+            prev_transform_matrix = np.copy(current_transform_matrix)
+            prev_projection_matrix = np.copy(current_projection_matrix)
+            prev_image = np.copy(current_image)
+            current_image = np.copy(next_image)
+            prev_features = np.copy(current_to_next_features)
+            current_features = np.copy(next_features)
+            current_projection_matrix = np.copy(next_projection_matrix)
             
             # Show current image if requested
             if show_progress:
-                cv2.imshow('Current Image', image_2)
+                cv2.imshow('Current Image', next_image)
                 if cv2.waitKey(1) & 0xff == ord('q'):
                     break
         
