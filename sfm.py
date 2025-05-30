@@ -1,745 +1,506 @@
-import tkinter as tk
-from tkinter import ttk, filedialog, messagebox
-import sys
-import threading
-import queue
-import os
-import tempfile
-import shutil
 import cv2
+import numpy as np
+import matplotlib.pyplot as plt
+import os
+from scipy.optimize import least_squares
+from tomlkit import boolean
+from tqdm import tqdm
 
-from core import StructureFromMotion
-from camera_calibration import CameraCalibrator
 
-class SFMApp(tk.Tk):
-    def __init__(self):
-        super().__init__()
-        self.title("Structure from Motion - 3D Reconstruction Tools")
-        self.geometry("1200x800")
-        self.minsize(1000, 700)
-        self.temp_frame_dir = None
+class StructureFromMotion:
+    """
+    A class for performing Structure from Motion (SfM) reconstruction from multiple images.
+    
+    This class provides methods to:
+    - Load and preprocess images
+    - Extract and match features between images
+    - Estimate camera poses
+    - Triangulate 3D points
+    - Export results to PLY or OBJ format
+    """
+    
+    def __init__(self, image_directory: str, k_path: str, downscale_factor: int = 2):
+        """
+        Initialize the Structure from Motion pipeline.
         
-        # Configure modern styling
-        self.configure_styling()
+        Args:
+            image_directory (str): Path to directory containing images
+            k_path (str): Path to file containing camera intrinsic parameters
+            downscale_factor (int): Factor by which to downscale images (default: 2)
+        """
+        self.image_directory = image_directory
+        self.k_path = k_path
+        self.downscale_factor = downscale_factor
         
-        # Create GUI elements
-        self.create_widgets()
+        # Initialize storage for results
+        self.total_points = np.zeros((1, 3))
+        self.total_colors = np.zeros((1, 3))
         
-        # Redirect stdout
-        self.output_queue = queue.Queue()
-        self.original_stdout = sys.stdout
-        sys.stdout = StdoutRedirector(self.output_queue)
+        # Load images and camera parameters
+        self.image_paths, self.K = self._load_images_and_K()
+        self.image_list, self.K = self._downscale_images_and_K()
         
-        self.after(100, self.process_output)
+    def _load_images_and_K(self):
+        """
+        Loads images from a directory and camera intrinsic parameters from a file.
         
-        # Cleanup temp directory on exit
-        self.protocol("WM_DELETE_WINDOW", self.on_close)
-
-    def configure_styling(self):
-        """Configure modern styling for the application"""
-        # Configure ttk styles
-        style = ttk.Style()
+        Returns:
+            image_paths (list[str]): List of paths to the images.
+            K (ndarray (3, 3)): The K matrix.
+        """
+        image_paths = [os.path.join(self.image_directory, i) for i in os.listdir(self.image_directory)]
+        print(f"Loaded {len(image_paths)} images: {image_paths}")
         
-        # Use a modern theme
-        available_themes = style.theme_names()
-        if 'clam' in available_themes:
-            style.theme_use('clam')
-        elif 'alt' in available_themes:
-            style.theme_use('alt')
+        with open(self.k_path, "r") as f:
+            lines = f.readlines()
+            K = np.float32([i.strip().split(" ") for i in lines])
+            
+        return image_paths, K
+    
+    def _downscale_images_and_K(self):
+        """
+        Downscale the images using Gaussian pyramid and adjust camera intrinsic parameters.
         
-        # Configure custom styles
-        style.configure('Title.TLabel', font=('Segoe UI', 12, 'bold'))
-        style.configure('Heading.TLabel', font=('Segoe UI', 10, 'bold'))
-        style.configure('Action.TButton', font=('Segoe UI', 10, 'bold'))
+        Returns:
+            downscaled_image_list (list[ndarray]): List of downscaled images.
+            K_adjusted (ndarray (3, 3)): Downscaled K matrix.
+        """
+        downscaled_image_list = []
         
-        # Configure colors
-        self.configure(bg='#f8f9fa')
-
-    def create_widgets(self):
-        self.input_widgets = []
+        for img_path in self.image_paths:
+            img = cv2.imread(img_path)
+            for _ in range(1, int(self.downscale_factor / 2) + 1):
+                img = cv2.pyrDown(img)
+            downscaled_image_list.append(img)
         
-        # Main container with padding
-        main_container = ttk.Frame(self)
-        main_container.pack(fill=tk.BOTH, expand=True, padx=15, pady=10)
+        # Adjust camera matrix for downscaling
+        K_adjusted = self.K.copy()
+        K_adjusted[0, 0] /= self.downscale_factor  # fx
+        K_adjusted[1, 1] /= self.downscale_factor  # fy
+        K_adjusted[0, 2] /= self.downscale_factor  # cx
+        K_adjusted[1, 2] /= self.downscale_factor  # cy
         
-        # Header with instructions button
-        header_frame = ttk.Frame(main_container)
-        header_frame.pack(fill=tk.X, pady=(0, 15))
+        return downscaled_image_list, K_adjusted
+    
+    @staticmethod
+    def find_features(image_0, image_1):
+        """
+        Feature detection using the SIFT algorithm and KNN matching.
         
-        # Title and subtitle - centered
-        title_section = ttk.Frame(header_frame)
-        title_section.pack(expand=True, fill=tk.X)
+        Args:
+            image_0 (ndarray): First image
+            image_1 (ndarray): Second image
+            
+        Returns:
+            features_0 (ndarray (N, 2)): Keypoints(features) of image 0.
+            features_1 (ndarray (N, 2)): Keypoints(features) of image 1.
+        """
+        # Initialize SIFT
+        sift = cv2.SIFT_create()
         
-        title_label = ttk.Label(
-            title_section, 
-            text="3D Reconstruction Tools", 
-            style='Title.TLabel'
-        )
-        title_label.pack(anchor=tk.CENTER)
+        # Detect and compute features
+        key_points_0, desc_0 = sift.detectAndCompute(cv2.cvtColor(image_0, cv2.COLOR_BGR2GRAY), None)
+        key_points_1, desc_1 = sift.detectAndCompute(cv2.cvtColor(image_1, cv2.COLOR_BGR2GRAY), None)
         
-        subtitle_label = ttk.Label(
-            title_section, 
-            text="Structure from Motion & Camera Calibration",
-            foreground='#6c757d'
-        )
-        subtitle_label.pack(anchor=tk.CENTER, pady=(5, 0))
+        # Match features using BruteForce matcher
+        bf = cv2.BFMatcher()
+        matches = bf.knnMatch(desc_0, desc_1, k=2)
         
-        # Instructions button - positioned absolutely to top right
-        instructions_btn = ttk.Button(
-            header_frame,
-            text="Instructions",
-            command=self.show_instructions,
-            width=15
-        )
-        instructions_btn.place(relx=1.0, rely=0.0, anchor=tk.NE)
+        # Apply Lowe's ratio test
+        features_0 = []
+        features_1 = []
+        for best_match, second_best_match in matches:
+            if best_match.distance < 0.70 * second_best_match.distance:
+                features_0.append(key_points_0[best_match.queryIdx].pt)
+                features_1.append(key_points_1[best_match.trainIdx].pt)
         
-        # Create notebook for tabs with better styling
-        self.notebook = ttk.Notebook(main_container)
-        self.notebook.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
+        return np.float32(features_0), np.float32(features_1)
+    
+    @staticmethod
+    def triangulation(projection_matrix_A, projection_matrix_B, features_A, features_B):
+        """
+        Compute 3D point cloud from two sets of 2D image points using triangulation.
         
-        # SFM Tab
-        sfm_frame = ttk.Frame(self.notebook)
-        self.notebook.add(sfm_frame, text="  Structure from Motion  ")
-        self.create_sfm_widgets(sfm_frame)
+        Args:
+            projection_matrix_A (ndarray (3, 4)): Projection matrix for first camera
+            projection_matrix_B (ndarray (3, 4)): Projection matrix for second camera
+            features_A (ndarray (N, 2)): 2D points in first image
+            features_B (ndarray (N, 2)): 2D points in second image
+            
+        Returns:
+            pt_cloud (ndarray (N, 4)): 3D point cloud.
+        """
+        pt_cloud = cv2.triangulatePoints(projection_matrix_A, projection_matrix_B, 
+                                       features_A.T, features_B.T)
+        pt_cloud = pt_cloud / pt_cloud[3]
+        return pt_cloud
+    
+    @staticmethod
+    def solve_pnp(points_3d, features, K, dist_coeff, initial):
+        """
+        Solve the Perspective-n-Point (PnP) problem.
         
-        # Camera Calibration Tab
-        calib_frame = ttk.Frame(self.notebook)
-        self.notebook.add(calib_frame, text="  Camera Calibration  ")
-        self.create_calibration_widgets(calib_frame)
-        
-        # Log section - full width at bottom
-        self.create_log_section(main_container)
-        
-        # Status bar
-        self.create_status_bar()
-
-    def load_instructions_text(self):
-        """Load instructions text from external file"""
-        instructions_file = "instructions.txt"
+        Args:
+            points_3d (ndarray (N, 1, 3)): Array of 3D points
+            features (ndarray (2, N) or (N, 2)): Array of corresponding 2D features
+            K (ndarray (3, 3)): Camera intrinsic matrix
+            dist_coeff (ndarray (5, 1)): Distortion coefficients
+            initial (int): Initial flag
+            
+        Returns:
+            rotation_matrix (ndarray (3, 3)): Rotation matrix.
+            translation_vector (ndarray (3, 1)): Translation vector.
+            features (ndarray (N, 2)): Inlier features.
+            points_3d (ndarray (N, 3)): Inlier 3D points.
+        """
+        if initial == 1:
+            points_3d = points_3d[:, 0, :]
+            features = features.T
         
         try:
-            # Try to read from the same directory as the script
-            script_dir = os.path.dirname(os.path.abspath(__file__))
-            instructions_path = os.path.join(script_dir, instructions_file)
+            # Solve PnP with RANSAC
+            _, rotation_vector_calc, translation_vector, inlier = cv2.solvePnPRansac(
+                points_3d, features, K, dist_coeff, cv2.SOLVEPNP_ITERATIVE)
+            rotation_matrix, _ = cv2.Rodrigues(rotation_vector_calc)
             
-            if os.path.exists(instructions_path):
-                with open(instructions_path, 'r', encoding='utf-8') as f:
-                    return f.read()
-            else:
-                # Fallback: try current working directory
-                if os.path.exists(instructions_file):
-                    with open(instructions_file, 'r', encoding='utf-8') as f:
-                        return f.read()
-                else:
-                    return "Instructions file not found. Please ensure 'instructions.txt' is in the same directory as this application."
-                    
-        except Exception as e:
-            print(f"Warning: Could not load instructions from file: {e}")
-            return "Error loading instructions file."
-
-    def show_instructions(self):
-        """Show instructions popup window"""
-        instructions_window = tk.Toplevel(self)
-        instructions_window.title("Instructions - 3D Reconstruction Tools")
-        instructions_window.geometry("800x600")
-        instructions_window.resizable(True, True)
-        instructions_window.transient(self)
-        instructions_window.grab_set()
-        
-        # Center the window
-        instructions_window.geometry("+%d+%d" % (self.winfo_rootx() + 50, self.winfo_rooty() + 50))
-        
-        # Main frame with padding
-        main_frame = ttk.Frame(instructions_window)
-        main_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=20)
-        
-        # Title
-        title_label = ttk.Label(main_frame, text="User Instructions", style='Title.TLabel')
-        title_label.pack(pady=(0, 20))
-        
-        # Create scrollable text widget
-        text_frame = ttk.Frame(main_frame)
-        text_frame.pack(fill=tk.BOTH, expand=True)
-        
-        # Text widget with scrollbar
-        text_widget = tk.Text(
-            text_frame,
-            wrap=tk.WORD,
-            font=('Segoe UI', 10),
-            bg='white',
-            fg='black',
-            padx=15,
-            pady=15,
-            relief='solid',
-            borderwidth=1
-        )
-        
-        scrollbar = ttk.Scrollbar(text_frame, orient=tk.VERTICAL, command=text_widget.yview)
-        text_widget.configure(yscrollcommand=scrollbar.set)
-        
-        text_widget.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-        
-        # Instructions content
-        instructions_text = self.load_instructions_text()
-
-        # Insert text and make it read-only
-        text_widget.insert('1.0', instructions_text)
-        text_widget.config(state='disabled')
-        
-        # Close button
-        button_frame = ttk.Frame(main_frame)
-        button_frame.pack(fill=tk.X, pady=(20, 0))
-        
-        close_btn = ttk.Button(
-            button_frame,
-            text="Close",
-            command=instructions_window.destroy,
-            style='Action.TButton'
-        )
-        close_btn.pack(anchor=tk.CENTER)
-
-    def create_section_frame(self, parent, title):
-        """Create a styled section frame with title"""
-        section_frame = ttk.LabelFrame(parent, text=title, padding=(15, 10))
-        return section_frame
-
-    def create_sfm_widgets(self, parent):
-        # Main container with padding
-        main_frame = ttk.Frame(parent)
-        main_frame.pack(fill=tk.BOTH, expand=True, padx=15, pady=10)
-        
-        # Top frame for side-by-side layout
-        top_frame = ttk.Frame(main_frame)
-        top_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 20))
-        
-        # Left column - Input Configuration
-        left_frame = ttk.Frame(top_frame)
-        left_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 10))
-        
-        input_section = self.create_section_frame(left_frame, "Input Configuration")
-        input_section.pack(fill=tk.BOTH, expand=True)
-
-        # Input type with modern radio buttons
-        type_frame = ttk.Frame(input_section)
-        type_frame.pack(fill=tk.X, pady=(0, 15))
-        
-        ttk.Label(type_frame, text="Data Source:", style='Heading.TLabel').pack(anchor=tk.W)
-        
-        radio_frame = ttk.Frame(type_frame)
-        radio_frame.pack(anchor=tk.W, pady=(8, 0))
-        
-        self.input_type_var = tk.StringVar(value="image")
-        
-        image_radio = ttk.Radiobutton(
-            radio_frame, 
-            text="Image Directory", 
-            variable=self.input_type_var, 
-            value="image", 
-            command=self.update_input_ui
-        )
-        image_radio.pack(anchor=tk.W, pady=2)
-        
-        video_radio = ttk.Radiobutton(
-            radio_frame, 
-            text="Video File", 
-            variable=self.input_type_var, 
-            value="video", 
-            command=self.update_input_ui
-        )
-        video_radio.pack(anchor=tk.W, pady=2)
-
-        # Input Path selection with improved layout
-        path_frame = ttk.Frame(input_section)
-        path_frame.pack(fill=tk.X, pady=(0, 15))
-
-        self.input_path_label = ttk.Label(path_frame, text="Select Image Directory:", style='Heading.TLabel')
-        self.input_path_label.pack(anchor=tk.W, pady=(0, 8))
-        
-        path_input_frame = ttk.Frame(path_frame)
-        path_input_frame.pack(fill=tk.X)
-        
-        self.input_path_entry = ttk.Entry(path_input_frame, font=('Segoe UI', 9))
-        self.input_path_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 10))
-        self.input_widgets.append(self.input_path_entry)
-        
-        self.browse_input_btn = ttk.Button(
-            path_input_frame, 
-            text="Browse...", 
-            command=self.browse_image_directory,
-            width=12
-        )
-        self.browse_input_btn.pack(side=tk.RIGHT)
-        self.input_widgets.append(self.browse_input_btn)
-
-        # Directory K Matrix selection
-        dir_k_frame = ttk.Frame(input_section)
-        dir_k_frame.pack(fill=tk.X, pady=(0, 15))
-
-        ttk.Label(dir_k_frame, text="Camera Matrix File (K):", style='Heading.TLabel').pack(anchor=tk.W, pady=(0, 8))
-        
-        k_input_frame = ttk.Frame(dir_k_frame)
-        k_input_frame.pack(fill=tk.X)
-        
-        self.dir_k_entry = ttk.Entry(k_input_frame, font=('Segoe UI', 9))
-        self.dir_k_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 10))
-        self.input_widgets.append(self.dir_k_entry)
-        
-        browse_k_btn = ttk.Button(k_input_frame, text="Browse...", command=self.browse_k_file, width=12)
-        browse_k_btn.pack(side=tk.RIGHT)
-        self.input_widgets.append(browse_k_btn)
-
-        # Right column - Output Configuration
-        right_frame = ttk.Frame(top_frame)
-        right_frame.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=(10, 0))
-        
-        output_section = self.create_section_frame(right_frame, "Output Configuration")
-        output_section.pack(fill=tk.BOTH, expand=True)
-
-        # Result format selection
-        format_frame = ttk.Frame(output_section)
-        format_frame.pack(fill=tk.X, pady=(0, 20))
-
-        ttk.Label(format_frame, text="Output Format:", style='Heading.TLabel').pack(anchor=tk.W, pady=(0, 8))
-        
-        format_radio_frame = ttk.Frame(format_frame)
-        format_radio_frame.pack(anchor=tk.W)
-        
-        self.result_format_var = tk.StringVar()
-        self.result_format_var.set("ply")
-        
-        ply_radio_btn = ttk.Radiobutton(
-            format_radio_frame, 
-            text="PLY Format", 
-            variable=self.result_format_var, 
-            value="ply"
-        )
-        ply_radio_btn.pack(anchor=tk.W, pady=2)
-        self.input_widgets.append(ply_radio_btn)
-        
-        obj_radio_btn = ttk.Radiobutton(
-            format_radio_frame, 
-            text="OBJ Format", 
-            variable=self.result_format_var, 
-            value="obj"
-        )
-        obj_radio_btn.pack(anchor=tk.W, pady=2)
-        self.input_widgets.append(obj_radio_btn)
-        
-        # Run button - centered at bottom
-        button_frame = ttk.Frame(main_frame)
-        button_frame.pack(fill=tk.X, pady=(0, 20))
-        
-        run_btn = ttk.Button(
-            button_frame, 
-            text="Start 3D Reconstruction", 
-            command=self.run_sfm,
-            style='Action.TButton'
-        )
-        run_btn.pack(anchor=tk.CENTER)
-        self.input_widgets.append(run_btn)
-
-    def create_calibration_widgets(self, parent):
-        # Main container with padding
-        main_frame = ttk.Frame(parent)
-        main_frame.pack(fill=tk.BOTH, expand=True, padx=15, pady=10)
-        
-        # Top frame for side-by-side layout
-        top_frame = ttk.Frame(main_frame)
-        top_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 20))
-        
-        # Left column - Calibration Source
-        left_frame = ttk.Frame(top_frame)
-        left_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 10))
-        
-        input_section = self.create_section_frame(left_frame, "Calibration Source")
-        input_section.pack(fill=tk.BOTH, expand=True)
-
-        # Calibration input type
-        type_frame = ttk.Frame(input_section)
-        type_frame.pack(fill=tk.X, pady=(0, 15))
-
-        ttk.Label(type_frame, text="Data Source:", style='Heading.TLabel').pack(anchor=tk.W, pady=(0, 8))
-        
-        radio_frame = ttk.Frame(type_frame)
-        radio_frame.pack(anchor=tk.W)
-        
-        self.calib_input_type_var = tk.StringVar(value="images")
-        
-        images_radio = ttk.Radiobutton(
-            radio_frame, 
-            text="Calibration Images Directory", 
-            variable=self.calib_input_type_var, 
-            value="images", 
-            command=self.update_calib_ui
-        )
-        images_radio.pack(anchor=tk.W, pady=2)
-        
-        video_radio = ttk.Radiobutton(
-            radio_frame, 
-            text="Calibration Video File", 
-            variable=self.calib_input_type_var, 
-            value="video", 
-            command=self.update_calib_ui
-        )
-        video_radio.pack(anchor=tk.W, pady=2)
-
-        # Calibration input path
-        path_frame = ttk.Frame(input_section)
-        path_frame.pack(fill=tk.X, pady=(0, 15))
-
-        self.calib_path_label = ttk.Label(path_frame, text="Select Calibration Images Directory:", style='Heading.TLabel')
-        self.calib_path_label.pack(anchor=tk.W, pady=(0, 8))
-        
-        path_input_frame = ttk.Frame(path_frame)
-        path_input_frame.pack(fill=tk.X)
-        
-        self.calib_path_entry = ttk.Entry(path_input_frame, font=('Segoe UI', 9))
-        self.calib_path_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 10))
-        
-        self.browse_calib_btn = ttk.Button(
-            path_input_frame, 
-            text="Browse...", 
-            command=self.browse_calib_images,
-            width=12
-        )
-        self.browse_calib_btn.pack(side=tk.RIGHT)
-
-        # Right column - Calibration Settings
-        right_frame = ttk.Frame(top_frame)
-        right_frame.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=(10, 0))
-        
-        settings_section = self.create_section_frame(right_frame, "Calibration Settings")
-        settings_section.pack(fill=tk.BOTH, expand=True)
-
-        # Chessboard size settings
-        chessboard_frame = ttk.Frame(settings_section)
-        chessboard_frame.pack(fill=tk.X, pady=(0, 15))
-
-        ttk.Label(chessboard_frame, text="Chessboard Pattern (inner corners):", style='Heading.TLabel').pack(anchor=tk.W, pady=(0, 8))
-        
-        size_input_frame = ttk.Frame(chessboard_frame)
-        size_input_frame.pack(anchor=tk.W)
-        
-        ttk.Label(size_input_frame, text="Width:").pack(side=tk.LEFT, padx=(0, 5))
-        self.chessboard_width_var = tk.StringVar(value="10")
-        width_entry = ttk.Entry(size_input_frame, textvariable=self.chessboard_width_var, width=8)
-        width_entry.pack(side=tk.LEFT, padx=(0, 15))
-        
-        ttk.Label(size_input_frame, text="Height:").pack(side=tk.LEFT, padx=(0, 5))
-        self.chessboard_height_var = tk.StringVar(value="7")
-        height_entry = ttk.Entry(size_input_frame, textvariable=self.chessboard_height_var, width=8)
-        height_entry.pack(side=tk.LEFT)
-
-        # Frame skip for video (only shown when video is selected)
-        self.frame_skip_frame = ttk.Frame(settings_section)
-        
-        skip_label_frame = ttk.Frame(self.frame_skip_frame)
-        skip_label_frame.pack(fill=tk.X, pady=(0, 8))
-        ttk.Label(skip_label_frame, text="Frame Processing:", style='Heading.TLabel').pack(anchor=tk.W)
-        ttk.Label(skip_label_frame, text="Process every Nth frame:", foreground='#6c757d').pack(anchor=tk.W)
-        
-        self.frame_skip_var = tk.StringVar(value="30")
-        frame_skip_entry = ttk.Entry(self.frame_skip_frame, textvariable=self.frame_skip_var, width=15)
-        frame_skip_entry.pack(anchor=tk.W)
-
-        # Run calibration button - centered at bottom
-        button_frame = ttk.Frame(main_frame)
-        button_frame.pack(fill=tk.X, pady=(0, 20))
-        
-        run_calib_btn = ttk.Button(
-            button_frame, 
-            text="Run Camera Calibration", 
-            command=self.run_calibration,
-            style='Action.TButton'
-        )
-        run_calib_btn.pack(anchor=tk.CENTER)
-
-    def create_log_section(self, parent):
-        """Create the output log section - full width and larger"""
-        log_section = self.create_section_frame(parent, "Processing Output")
-        log_section.pack(fill=tk.BOTH, expand=True, pady=(10, 0))
-        
-        # Create text widget with scrollbar - increased height
-        text_frame = ttk.Frame(log_section)
-        text_frame.pack(expand=True, fill=tk.BOTH)
-        
-        self.log_text = tk.Text(
-            text_frame, 
-            wrap=tk.WORD, 
-            height=18,  # Increased from 12 to 18
-            font=('Consolas', 9),
-            bg='#2d3748',
-            fg='#e2e8f0',
-            insertbackground='#4fd1c7',
-            selectbackground='#4a5568'
-        )
-        
-        log_scrollbar = ttk.Scrollbar(text_frame, orient=tk.VERTICAL, command=self.log_text.yview)
-        self.log_text.configure(yscrollcommand=log_scrollbar.set)
-        
-        self.log_text.pack(side=tk.LEFT, expand=True, fill=tk.BOTH)
-        log_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-        
-        # Add welcome message
-        welcome_msg = "Welcome to the 3D Reconstruction Tools!\nSelect your input data and configuration, then click the run button to begin.\n" + "="*60 + "\n"
-        self.log_text.insert(tk.END, welcome_msg)
-
-    def create_status_bar(self):
-        """Create modern status bar"""
-        status_frame = ttk.Frame(self)
-        status_frame.pack(side=tk.BOTTOM, fill=tk.X, padx=10, pady=(5, 10))
-        
-        separator = ttk.Separator(status_frame, orient='horizontal')
-        separator.pack(fill=tk.X, pady=(0, 8))
-        
-        self.status_var = tk.StringVar(value="Ready")
-        status_bar = ttk.Label(
-            status_frame, 
-            textvariable=self.status_var,
-            font=('Segoe UI', 9),
-            foreground='#495057'
-        )
-        status_bar.pack(anchor=tk.W)
-
-    def update_input_ui(self):
-        """Update UI elements based on input type selection"""
-        if self.input_type_var.get() == "image":
-            self.input_path_label.config(text="Select Image Directory:")
-            self.browse_input_btn.config(command=self.browse_image_directory)
-        else:
-            self.input_path_label.config(text="Select Video File:")
-            self.browse_input_btn.config(command=self.browse_video_file)
-
-    def update_calib_ui(self):
-        """Update calibration UI based on input type"""
-        if self.calib_input_type_var.get() == "images":
-            self.calib_path_label.config(text="Select Calibration Images Directory:")
-            self.browse_calib_btn.config(command=self.browse_calib_images)
-            self.frame_skip_frame.pack_forget()
-        else:
-            self.calib_path_label.config(text="Select Calibration Video File:")
-            self.browse_calib_btn.config(command=self.browse_calib_video)
-            self.frame_skip_frame.pack(fill=tk.X, pady=(0, 15))
-
-    def browse_image_directory(self):
-        dir_path = filedialog.askdirectory(title="Select Image Directory")
-        if dir_path:
-            self.input_path_entry.delete(0, tk.END)
-            self.input_path_entry.insert(0, dir_path)
-
-    def browse_video_file(self):
-        file_path = filedialog.askopenfilename(
-            title="Select Video File",
-            filetypes=[("Video Files", "*.mp4 *.avi *.mov *.mkv"), ("All Files", "*.*")]
-        )
-        if file_path:
-            self.input_path_entry.delete(0, tk.END)
-            self.input_path_entry.insert(0, file_path)
-
-    def browse_calib_images(self):
-        dir_path = filedialog.askdirectory(title="Select Calibration Images Directory")
-        if dir_path:
-            self.calib_path_entry.delete(0, tk.END)
-            self.calib_path_entry.insert(0, dir_path)
-
-    def browse_calib_video(self):
-        file_path = filedialog.askopenfilename(
-            title="Select Calibration Video",
-            filetypes=[("Video Files", "*.mp4 *.avi *.mov *.mkv"), ("All Files", "*.*")]
-        )
-        if file_path:
-            self.calib_path_entry.delete(0, tk.END)
-            self.calib_path_entry.insert(0, file_path)
-
-    def browse_k_file(self):
-        path = filedialog.askopenfilename(
-            title="Select Camera Matrix File",
-            filetypes=[("Text Files", "*.txt"), ("NumPy Files", "*.npy"), ("All Files", "*.*")]
-        )
-        if path:
-            self.dir_k_entry.delete(0, tk.END)
-            self.dir_k_entry.insert(0, path)
-
-    def run_calibration(self):
-        """Run camera calibration in a separate thread"""
-        calib_path = self.calib_path_entry.get()
-        calib_type = self.calib_input_type_var.get()
-        
-        # Validate inputs
-        if calib_type == "images":
-            if not calib_path or not os.path.isdir(calib_path):
-                messagebox.showerror("Input Error", "Please select a valid calibration images directory")
-                return
-        else:
-            if not calib_path or not os.path.isfile(calib_path):
-                messagebox.showerror("Input Error", "Please select a valid calibration video file")
-                return
-
-        # Get chessboard size
-        try:
-            width = int(self.chessboard_width_var.get())
-            height = int(self.chessboard_height_var.get())
-            if width <= 0 or height <= 0:
-                raise ValueError()
-        except ValueError:
-            messagebox.showerror("Input Error", "Please enter valid positive integers for chessboard size")
-            return
-
-        # Get frame skip (for video only)
-        frame_skip = 30
-        if calib_type == "video":
-            try:
-                frame_skip = int(self.frame_skip_var.get())
-                if frame_skip <= 0:
-                    raise ValueError()
-            except ValueError:
-                messagebox.showerror("Input Error", "Please enter a valid positive integer for frame skip")
-                return
-
-        # Start calibration
-        self.status_var.set("Running camera calibration...")
-        self.log_text.insert(tk.END, "\n" + "="*60 + "\n")
-        self.log_text.insert(tk.END, "Starting camera calibration process...\n")
-        self.log_text.see(tk.END)
-        
-        calib_thread = threading.Thread(
-            target=self.execute_calibration,
-            args=(calib_path, calib_type, (width, height), frame_skip),
-            daemon=True
-        )
-        calib_thread.start()
-
-    def execute_calibration(self, calib_path, calib_type, chessboard_size, frame_skip):
-        """Execute camera calibration"""
-        try:
-            calibrator = CameraCalibrator(chessboard_size)
-            
-            if calib_type == "images":
-                mtx = calibrator.calibrate_from_images(calib_path)
-            else:
-                mtx = calibrator.calibrate_from_video(calib_path, frame_skip)
-            
-            if mtx is None:
-                self.output_queue.put("\nCamera calibration failed!\n")
-            else:
-                self.output_queue.put("\nCamera calibration completed successfully!\n")
+            if inlier is not None:
+                features = features[inlier[:, 0]]
+                points_3d = points_3d[inlier[:, 0]]
                 
-        except Exception as e:
-            self.output_queue.put(f"\nCalibration error: {str(e)}\n")
-        finally:
-            self.status_var.set("Ready")
-
-    def run_sfm(self):
-        input_path = self.input_path_entry.get()
-        k_path = self.dir_k_entry.get()
-        result_format = self.result_format_var.get()
-        input_type = self.input_type_var.get()
-
-        # Validate inputs
-        if input_type == "image":
-            if not input_path or not os.path.isdir(input_path):
-                messagebox.showerror("Input Error", "Please select a valid image directory")
-                return
-        else:
-            if not input_path or not os.path.isfile(input_path):
-                messagebox.showerror("Input Error", "Please select a valid video file")
-                return
-
-        if not k_path or not os.path.isfile(k_path):
-            messagebox.showerror("Input Error", "Please select a valid camera matrix file")
-            return
-
-        # Disable UI during processing
-        self.status_var.set("Processing 3D reconstruction...")
-        self.input_state(tk.DISABLED)
+        except cv2.error:
+            print("Warning: PnP failed, returning default pose")
+            rotation_matrix = np.eye(3)
+            translation_vector = np.zeros((3, 1))
         
-        # Add processing start message
-        self.log_text.insert(tk.END, "\n" + "="*60 + "\n")
-        self.log_text.insert(tk.END, "Starting 3D reconstruction process...\n")
-        self.log_text.see(tk.END)
+        return rotation_matrix, translation_vector, features, points_3d
+    
+    @staticmethod
+    def calculate_reprojection_error(points_3d, features, transform_matrix, K, homogenity):
+        """
+        Calculate reprojection error between 3D points and their corresponding 2D features.
         
-        # Start processing thread
-        sfm_thread = threading.Thread(
-            target=self.execute_sfm,
-            args=(input_path, k_path, result_format, input_type),
-            daemon=True
-        )
-        sfm_thread.start()
-
-    def execute_sfm(self, input_path, k_path, result_format, input_type):
-        try:
-            # Handle video input
-            if input_type == "video":
-                self.output_queue.put("Extracting frames from video...\n")
-                self.temp_frame_dir = tempfile.mkdtemp()
-                success = self.extract_frames(input_path, self.temp_frame_dir)
-                if not success:
-                    raise ValueError("Failed to extract frames from video")
-                input_path = self.temp_frame_dir
-
-            # Run main SFM process with either image dir or temp frame dir
-            sfm = StructureFromMotion(input_path, k_path)
-            sfm.run(result_format)
-            self.output_queue.put("\n3D reconstruction completed successfully!\n")
+        Args:
+            points_3d (ndarray (4, N) or (N, 3)): Array of 3D points
+            features (ndarray (2, N) or (N, 2)): Array of corresponding 2D features
+            transform_matrix (ndarray (3, 4)): Transformation matrix [R|t]
+            K (ndarray (3, 3)): Camera intrinsic matrix
+            homogenity (int): Indicator for homogeneous coordinates
             
-        except Exception as e:
-            self.output_queue.put(f"\nError: {str(e)}\n")
-        finally:
-            self.input_state(tk.NORMAL)
-            self.status_var.set("Ready")
-            # Cleanup temp directory
-            if self.temp_frame_dir and os.path.exists(self.temp_frame_dir):
-                shutil.rmtree(self.temp_frame_dir)
-                self.temp_frame_dir = None
+        Returns:
+            error (float): The mean reprojection error.
+            points_3d (ndarray (N, 1, 3)): The (possibly transformed) 3D points.
+        """
+        if points_3d.size == 0:
+            return float('inf'), points_3d
+        
+        # Extract rotation and translation
+        rot_matrix = transform_matrix[:3, :3]
+        tran_vector = transform_matrix[:3, 3]
+        rot_vector, _ = cv2.Rodrigues(rot_matrix)
+        
+        # Convert to homogeneous coordinates if needed
+        if homogenity == 1:
+            points_3d = cv2.convertPointsFromHomogeneous(points_3d.T)
+        
+        # Reshape for cv2.projectPoints
+        points_3d = np.asarray(points_3d).reshape(-1, 1, 3)
+        
+        # Project 3D points to 2D
+        features_calc, _ = cv2.projectPoints(points_3d, rot_vector, tran_vector, K, None)
+        
+        if features_calc is None:
+            return float('inf'), points_3d
+        
+        # Calculate error
+        features_calc = np.float32(features_calc[:, 0, :])
+        features = np.float32(features.T if homogenity == 1 else features)
+        
+        error = cv2.norm(features_calc, features, cv2.NORM_L2)
+        return error / len(features_calc), points_3d
+    
+    @staticmethod
+    def find_correspondences(img_points_1, img_points_2, img_points_3):
+        """
+        Find matching points between three images and return their indices and unmatched points.
+        
+        Args:
+            img_points_1 (ndarray (N,2)): 2D points in first image
+            img_points_2 (ndarray (N,2)): 2D points in second image
+            img_points_3 (ndarray (N,2)): 2D points in third image
+            
+        Returns:
+            matched_idx_1 (ndarray (N)): Array of indices of the points in the first image.
+            matched_idx_2 (ndarray (N)): Array of indices of the points in the second image.
+            unmatched_points_image2 (ndarray (N,2)): Array of 2D points in the second image that are not in the first image.
+            unmatched_points_image3 (ndarray (N,2)): Array of 2D points in the third image that are not in the first image.
+        """
+        matched_idx_1 = []
+        matched_idx_2 = []
+        
+        # Find matching points between first and second image
+        for i in range(img_points_1.shape[0]):
+            a = np.where(img_points_2 == img_points_1[i, :])
+            if a[0].size != 0:
+                matched_idx_1.append(i)
+                matched_idx_2.append(a[0][0])
+        
+        # Find unmatched points
+        unmatched_points_image2 = np.ma.array(img_points_2, mask=False)
+        unmatched_points_image2.mask[matched_idx_2] = True
+        unmatched_points_image2 = unmatched_points_image2.compressed()
+        unmatched_points_image2 = unmatched_points_image2.reshape(
+            int(unmatched_points_image2.shape[0] / 2), 2)
+        
+        unmatched_points_image3 = np.ma.array(img_points_3, mask=False)
+        unmatched_points_image3.mask[matched_idx_2] = True
+        unmatched_points_image3 = unmatched_points_image3.compressed()
+        unmatched_points_image3 = unmatched_points_image3.reshape(
+            int(unmatched_points_image3.shape[0] / 2), 2)
+        
+        return (np.array(matched_idx_1, dtype=np.int32),
+                np.array(matched_idx_2, dtype=np.int32),
+                unmatched_points_image2,
+                unmatched_points_image3)
+    
+    def _initialize_first_two_cameras(self):
+        """
+        Initialize the first two camera poses using the first two images.
+        
+        Returns:
+            tuple: Initial camera matrices, features, and 3D points
+        """
+        # Initialize transform matrices
+        # Transform matrix represents rotation and translation [R|t]
+        transform_matrix_0 = np.array([[1, 0, 0, 0], 
+                                     [0, 1, 0, 0], 
+                                     [0, 0, 1, 0]])
+        transform_matrix_1 = np.empty((3, 4))
+        
+        # Create projection matrices
+        # Projection matrix represents K.[R|t]
+        projection_matrix_0 = np.matmul(self.K, transform_matrix_0)
+        projection_matrix_1 = np.empty((3, 4))
+        
+        # Get first two images
+        image_0 = self.image_list[0]
+        image_1 = self.image_list[1]
+        
+        # Find features between first two images using SIFT and KNN
+        features_0, features_1 = self.find_features(image_0, image_1)
+        
+        # Find essential matrix and filter features
+        essential_matrix, inlier_mask = cv2.findEssentialMat(
+            features_0, features_1, self.K, method=cv2.RANSAC, 
+            prob=0.999, threshold=0.4, mask=None)
+        features_0 = features_0[inlier_mask.ravel() == 1]
+        features_1 = features_1[inlier_mask.ravel() == 1]
+        
+        # Recover pose and filter features
+        _, rotation_matrix, translation_matrix, inlier_mask = cv2.recoverPose(
+            essential_matrix, features_0, features_1, self.K)
+        features_0 = features_0[inlier_mask.ravel() > 0]
+        features_1 = features_1[inlier_mask.ravel() > 0]
+        
+        # Update transform matrix
+        # R1 = R_relative * R0
+        transform_matrix_1[:3, :3] = np.matmul(rotation_matrix, transform_matrix_0[:3, :3])
+        # t1 = t_0 + (R0 * t_relative)
+        transform_matrix_1[:3, 3] = (transform_matrix_0[:3, 3] + 
+                                   np.matmul(transform_matrix_0[:3, :3], translation_matrix.ravel()))
+        
+        # Update projection matrix
+        projection_matrix_1 = np.matmul(self.K, transform_matrix_1)
+        
+        # Triangulate points: find 3D points from corresponding 2D points
+        points_3d = self.triangulation(projection_matrix_0, projection_matrix_1, features_0, features_1)
+        
+        # Calculate and refine using PnP
+        error, points_3d = self.calculate_reprojection_error(
+            points_3d, features_1.T, transform_matrix_1, self.K, homogenity=1)
+        _, _, features_1, points_3d = self.solve_pnp(
+            points_3d, features_1.T, self.K, np.zeros((5, 1), dtype=np.float32), initial=1)
+        
+        return (transform_matrix_0, transform_matrix_1, projection_matrix_0, projection_matrix_1,
+                image_0, image_1, features_0, features_1, points_3d)
+    
+    def reconstruct(self, show_progress=True):
+        """
+        Perform the complete Structure from Motion reconstruction.
+        
+        Args:
+            show_progress (bool): Whether to show progress and intermediate results
+        """
+        # Initialize first two cameras
+        (transform_matrix_0, transform_matrix_1, projection_matrix_0, projection_matrix_1,
+         image_0, image_1, features_0, features_1, points_3d) = self._initialize_first_two_cameras()
+        
+        # Initialize previous and current camera matrices
+        prev_transform_matrix = transform_matrix_0
+        current_transform_matrix = transform_matrix_1
+        prev_projection_matrix = projection_matrix_0
+        current_projection_matrix = projection_matrix_1
+        prev_image = image_0
+        current_image = image_1
+        prev_features = features_0
+        current_features = features_1
+        
+        # Process remaining images
+        remaining_images_count = len(self.image_list) - 2
+        for image_idx in tqdm(range(remaining_images_count), desc="Processing images"):
+            next_image = self.image_list[image_idx + 2]
+            current_to_next_features, next_features = self.find_features(current_image, next_image)
+            
+            if image_idx != 0:
+                points_3d = self.triangulation(prev_projection_matrix, current_projection_matrix, prev_features, current_features)
+                points_3d = cv2.convertPointsFromHomogeneous(points_3d.T)
+                points_3d = points_3d[:, 0, :]
+            
+            # Find correspondences
+            matched_prev_idx, matched_current_idx, unmatched_current_points, unmatched_next_points = \
+                self.find_correspondences(current_features, current_to_next_features, next_features)
+            corresponding_next_points = next_features[matched_current_idx]
+            
+            # Solve PnP for next camera
+            rot_matrix, tran_matrix, corresponding_next_points, points_3d = self.solve_pnp(
+                points_3d[matched_prev_idx], corresponding_next_points, self.K, 
+                np.zeros((5, 1), dtype=np.float32), initial=0)
+            
+            current_transform_matrix = np.hstack((rot_matrix, tran_matrix))
+            next_projection_matrix = np.matmul(self.K, current_transform_matrix)
+            
+            # Calculate reprojection error
+            error, points_3d = self.calculate_reprojection_error(
+                points_3d, corresponding_next_points, current_transform_matrix, self.K, homogenity=0)
+            
+            # Triangulate new points
+            points_3d = self.triangulation(current_projection_matrix, next_projection_matrix, 
+                                         unmatched_current_points, unmatched_next_points)
+            error, points_3d = self.calculate_reprojection_error(
+                points_3d, unmatched_next_points.T, current_transform_matrix, self.K, homogenity=1)
+            
+            if show_progress:
+                print(f"Image {image_idx+3}/{len(self.image_list)} - Reprojection Error: {error:.4f}")
+            
+            # Store results
+            self.total_points = np.vstack((self.total_points, points_3d[:, 0, :]))
+            next_image_points = np.array(unmatched_next_points.T, dtype=np.int32)
+            color_vector = np.array([next_image[point[1], point[0]] for point in next_image_points.T])
+            self.total_colors = np.vstack((self.total_colors, color_vector))
+            
+            # Update for next iteration
+            prev_transform_matrix = np.copy(current_transform_matrix)
+            prev_projection_matrix = np.copy(current_projection_matrix)
+            prev_image = np.copy(current_image)
+            current_image = np.copy(next_image)
+            prev_features = np.copy(current_to_next_features)
+            current_features = np.copy(next_features)
+            current_projection_matrix = np.copy(next_projection_matrix)
+            
+            # Show current image if requested
+            if show_progress:
+                cv2.imshow('Current Image', next_image)
+                if cv2.waitKey(1) & 0xff == ord('q'):
+                    break
+        
+        if show_progress:
+            cv2.destroyAllWindows()
+    
+    def export_to_ply(self, filename='result.ply'):
+        """
+        Export reconstructed 3D points to PLY format.
+        
+        Args:
+            filename (str): Output filename for PLY file
+        """
+        out_points = self.total_points.reshape(-1, 3) * 200
+        out_colors = self.total_colors.reshape(-1, 3)
+        print(f"Exporting {len(out_points)} points to {filename}")
+        
+        verts = np.hstack([out_points, out_colors])
+        
+        # Filter outliers
+        mean = np.mean(verts[:, :3], axis=0)
+        scaled_verts = verts[:, :3] - mean
+        dist = np.sqrt(scaled_verts[:, 0] ** 2 + scaled_verts[:, 1] ** 2 + scaled_verts[:, 2] ** 2)
+        indx = np.where(dist < np.mean(dist) + 300)
+        verts = verts[indx]
+        
+        ply_header = '''ply
+            format ascii 1.0
+            element vertex %(vert_num)d
+            property float x
+            property float y
+            property float z
+            property uchar blue
+            property uchar green
+            property uchar red
+            end_header
+            '''
+        
+        with open(filename, 'w') as f:
+            f.write(ply_header % dict(vert_num=len(verts)))
+            np.savetxt(f, verts, '%f %f %f %d %d %d')
+    
+    def export_to_obj(self, filename='result.obj'):
+        """
+        Export reconstructed 3D points to OBJ format.
+        
+        Args:
+            filename (str): Output filename for OBJ file
+        """
+        out_points = self.total_points.reshape(-1, 3) * 200
+        out_colors = self.total_colors.reshape(-1, 3)
+        print(f"Exporting {len(out_points)} points to {filename}")
+        
+        verts = np.hstack([out_points, out_colors])
+        
+        # Filter outliers
+        mean = np.mean(verts[:, :3], axis=0)
+        scaled_verts = verts[:, :3] - mean
+        dist = np.sqrt(scaled_verts[:, 0] ** 2 + scaled_verts[:, 1] ** 2 + scaled_verts[:, 2] ** 2)
+        indx = np.where(dist < np.mean(dist) + 300)
+        verts = verts[indx]
+        
+        with open(filename, 'w') as f:
+            # Write vertices with colors
+            for v in verts:
+                f.write(f"v {v[0]:.6f} {v[1]:.6f} {v[2]:.6f} {int(v[3])} {int(v[4])} {int(v[5])}\n")
+    
+    def run(self, result_format, output_filename=None):
+        """
+        Run the complete Structure from Motion pipeline.
+        
+        Args:
+            result_format (str): Output format ('ply' or 'obj')
+            output_filename (str): Custom output filename (optional)
+        """
+        print("Starting Structure from Motion reconstruction...")
+        print(f"Processing {len(self.image_list)} images")
+        
+        # Perform reconstruction
+        self.reconstruct()
+        
+        # Export results
+        if output_filename is None:
+            output_filename = f"result.{result_format}"
+        
+        if result_format.lower() == "ply":
+            self.export_to_ply(output_filename)
+        elif result_format.lower() == "obj":
+            self.export_to_obj(output_filename)
+        else:
+            raise ValueError("result_format must be 'ply' or 'obj'")
+        
+        print(f"Reconstruction complete! Results saved to {output_filename}")
 
-    def extract_frames(self, video_path, output_dir):
-        try:
-            vidcap = cv2.VideoCapture(video_path)
-            if not vidcap.isOpened():
-                return False
 
-            count = 0
-            success, image = vidcap.read()
-            while success:
-                frame_path = os.path.join(output_dir, f"frame_{count:06d}.jpg")
-                cv2.imwrite(frame_path, image)
-                count += 1
-                success, image = vidcap.read()
-                
-            self.output_queue.put(f"Extracted {count} frames successfully\n")
-            return count > 0
-        except Exception as e:
-            self.output_queue.put(f"Frame extraction error: {str(e)}\n")
-            return False
-
-    def input_state(self, state):
-        for widget in self.input_widgets:
-            widget.config(state=state)
-
-    def process_output(self):
-        while not self.output_queue.empty():
-            msg = self.output_queue.get_nowait()
-            self.log_text.insert(tk.END, msg)
-            self.log_text.see(tk.END)
-        self.after(100, self.process_output)
-
-    def on_close(self):
-        """Cleanup temp directory when closing"""
-        if self.temp_frame_dir and os.path.exists(self.temp_frame_dir):
-            shutil.rmtree(self.temp_frame_dir)
-        self.destroy()
-
-class StdoutRedirector:
-    def __init__(self, queue):
-        self.queue = queue
-
-    def write(self, text):
-        self.queue.put(text)
-
-    def flush(self):
-        pass
-
+# Example usage
 if __name__ == "__main__":
-    app = SFMApp()
-    app.mainloop()
+    # Create SfM instance
+    sfm = StructureFromMotion("example/monument", "example/K.txt")
+    
+    # Run reconstruction and export to PLY
+    sfm.run("ply")
+    
+    # Alternative usage:
+    # sfm.run("obj", "my_reconstruction.obj")
