@@ -1,4 +1,3 @@
-# sfm.py
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 import sys
@@ -15,9 +14,13 @@ from camera_calibration import CameraCalibrator
 class SFMApp(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("Structure from Motion")
-        self.geometry("800x700")
+        self.title("Structure from Motion - 3D Reconstruction Tools")
+        self.geometry("1200x800")
+        self.minsize(1000, 700)
         self.temp_frame_dir = None
+        
+        # Configure modern styling
+        self.configure_styling()
         
         # Create GUI elements
         self.create_widgets()
@@ -32,185 +35,472 @@ class SFMApp(tk.Tk):
         # Cleanup temp directory on exit
         self.protocol("WM_DELETE_WINDOW", self.on_close)
 
+    def configure_styling(self):
+        """Configure modern styling for the application"""
+        # Configure ttk styles
+        style = ttk.Style()
+        
+        # Use a modern theme
+        available_themes = style.theme_names()
+        if 'clam' in available_themes:
+            style.theme_use('clam')
+        elif 'alt' in available_themes:
+            style.theme_use('alt')
+        
+        # Configure custom styles
+        style.configure('Title.TLabel', font=('Segoe UI', 12, 'bold'))
+        style.configure('Heading.TLabel', font=('Segoe UI', 10, 'bold'))
+        style.configure('Action.TButton', font=('Segoe UI', 10, 'bold'))
+        
+        # Configure colors
+        self.configure(bg='#f8f9fa')
+
     def create_widgets(self):
         self.input_widgets = []
         
-        # Create notebook for tabs
-        notebook = ttk.Notebook(self)
-        notebook.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+        # Main container with padding
+        main_container = ttk.Frame(self)
+        main_container.pack(fill=tk.BOTH, expand=True, padx=15, pady=10)
+        
+        # Header with instructions button
+        header_frame = ttk.Frame(main_container)
+        header_frame.pack(fill=tk.X, pady=(0, 15))
+        
+        # Title and subtitle - centered
+        title_section = ttk.Frame(header_frame)
+        title_section.pack(expand=True, fill=tk.X)
+        
+        title_label = ttk.Label(
+            title_section, 
+            text="3D Reconstruction Tools", 
+            style='Title.TLabel'
+        )
+        title_label.pack(anchor=tk.CENTER)
+        
+        subtitle_label = ttk.Label(
+            title_section, 
+            text="Structure from Motion & Camera Calibration",
+            foreground='#6c757d'
+        )
+        subtitle_label.pack(anchor=tk.CENTER, pady=(5, 0))
+        
+        # Instructions button - positioned absolutely to top right
+        instructions_btn = ttk.Button(
+            header_frame,
+            text="Instructions",
+            command=self.show_instructions,
+            width=15
+        )
+        instructions_btn.place(relx=1.0, rely=0.0, anchor=tk.NE)
+        
+        # Create notebook for tabs with better styling
+        self.notebook = ttk.Notebook(main_container)
+        self.notebook.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
         
         # SFM Tab
-        sfm_frame = ttk.Frame(notebook)
-        notebook.add(sfm_frame, text="Structure from Motion")
+        sfm_frame = ttk.Frame(self.notebook)
+        self.notebook.add(sfm_frame, text="  Structure from Motion  ")
         self.create_sfm_widgets(sfm_frame)
         
         # Camera Calibration Tab
-        calib_frame = ttk.Frame(notebook)
-        notebook.add(calib_frame, text="Camera Calibration")
+        calib_frame = ttk.Frame(self.notebook)
+        self.notebook.add(calib_frame, text="  Camera Calibration  ")
         self.create_calibration_widgets(calib_frame)
+        
+        # Log section - full width at bottom
+        self.create_log_section(main_container)
+        
+        # Status bar
+        self.create_status_bar()
+
+    def load_instructions_text(self):
+        """Load instructions text from external file"""
+        instructions_file = "instructions.txt"
+        
+        try:
+            # Try to read from the same directory as the script
+            script_dir = os.path.dirname(os.path.abspath(__file__))
+            instructions_path = os.path.join(script_dir, instructions_file)
+            
+            if os.path.exists(instructions_path):
+                with open(instructions_path, 'r', encoding='utf-8') as f:
+                    return f.read()
+            else:
+                # Fallback: try current working directory
+                if os.path.exists(instructions_file):
+                    with open(instructions_file, 'r', encoding='utf-8') as f:
+                        return f.read()
+                else:
+                    return "Instructions file not found. Please ensure 'instructions.txt' is in the same directory as this application."
+                    
+        except Exception as e:
+            print(f"Warning: Could not load instructions from file: {e}")
+            return "Error loading instructions file."
+
+    def show_instructions(self):
+        """Show instructions popup window"""
+        instructions_window = tk.Toplevel(self)
+        instructions_window.title("Instructions - 3D Reconstruction Tools")
+        instructions_window.geometry("800x600")
+        instructions_window.resizable(True, True)
+        instructions_window.transient(self)
+        instructions_window.grab_set()
+        
+        # Center the window
+        instructions_window.geometry("+%d+%d" % (self.winfo_rootx() + 50, self.winfo_rooty() + 50))
+        
+        # Main frame with padding
+        main_frame = ttk.Frame(instructions_window)
+        main_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=20)
+        
+        # Title
+        title_label = ttk.Label(main_frame, text="User Instructions", style='Title.TLabel')
+        title_label.pack(pady=(0, 20))
+        
+        # Create scrollable text widget
+        text_frame = ttk.Frame(main_frame)
+        text_frame.pack(fill=tk.BOTH, expand=True)
+        
+        # Text widget with scrollbar
+        text_widget = tk.Text(
+            text_frame,
+            wrap=tk.WORD,
+            font=('Segoe UI', 10),
+            bg='white',
+            fg='black',
+            padx=15,
+            pady=15,
+            relief='solid',
+            borderwidth=1
+        )
+        
+        scrollbar = ttk.Scrollbar(text_frame, orient=tk.VERTICAL, command=text_widget.yview)
+        text_widget.configure(yscrollcommand=scrollbar.set)
+        
+        text_widget.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        # Instructions content
+        instructions_text = self.load_instructions_text()
+
+        # Insert text and make it read-only
+        text_widget.insert('1.0', instructions_text)
+        text_widget.config(state='disabled')
+        
+        # Close button
+        button_frame = ttk.Frame(main_frame)
+        button_frame.pack(fill=tk.X, pady=(20, 0))
+        
+        close_btn = ttk.Button(
+            button_frame,
+            text="Close",
+            command=instructions_window.destroy,
+            style='Action.TButton'
+        )
+        close_btn.pack(anchor=tk.CENTER)
+
+    def create_section_frame(self, parent, title):
+        """Create a styled section frame with title"""
+        section_frame = ttk.LabelFrame(parent, text=title, padding=(15, 10))
+        return section_frame
 
     def create_sfm_widgets(self, parent):
-        # Input Type Selection
-        input_type_frame = ttk.Frame(parent)
-        input_type_frame.pack(pady=5, fill=tk.X)
+        # Main container with padding
+        main_frame = ttk.Frame(parent)
+        main_frame.pack(fill=tk.BOTH, expand=True, padx=15, pady=10)
+        
+        # Top frame for side-by-side layout
+        top_frame = ttk.Frame(main_frame)
+        top_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 20))
+        
+        # Left column - Input Configuration
+        left_frame = ttk.Frame(top_frame)
+        left_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 10))
+        
+        input_section = self.create_section_frame(left_frame, "Input Configuration")
+        input_section.pack(fill=tk.BOTH, expand=True)
 
-        ttk.Label(input_type_frame, text="Input Type:").pack(side=tk.LEFT, padx=5)
+        # Input type with modern radio buttons
+        type_frame = ttk.Frame(input_section)
+        type_frame.pack(fill=tk.X, pady=(0, 15))
+        
+        ttk.Label(type_frame, text="Data Source:", style='Heading.TLabel').pack(anchor=tk.W)
+        
+        radio_frame = ttk.Frame(type_frame)
+        radio_frame.pack(anchor=tk.W, pady=(8, 0))
         
         self.input_type_var = tk.StringVar(value="image")
-        ttk.Radiobutton(
-            input_type_frame, 
+        
+        image_radio = ttk.Radiobutton(
+            radio_frame, 
             text="Image Directory", 
             variable=self.input_type_var, 
             value="image", 
             command=self.update_input_ui
-        ).pack(side=tk.LEFT, padx=5)
-        ttk.Radiobutton(
-            input_type_frame, 
+        )
+        image_radio.pack(anchor=tk.W, pady=2)
+        
+        video_radio = ttk.Radiobutton(
+            radio_frame, 
             text="Video File", 
             variable=self.input_type_var, 
             value="video", 
             command=self.update_input_ui
-        ).pack(side=tk.LEFT, padx=5)
+        )
+        video_radio.pack(anchor=tk.W, pady=2)
 
-        # Input Path selection
-        self.input_path_frame = ttk.Frame(parent)
-        self.input_path_frame.pack(pady=10, fill=tk.X)
+        # Input Path selection with improved layout
+        path_frame = ttk.Frame(input_section)
+        path_frame.pack(fill=tk.X, pady=(0, 15))
 
-        self.input_path_label = ttk.Label(self.input_path_frame, text="Select Image Directory:")
-        self.input_path_label.pack(anchor=tk.W, padx=5)
+        self.input_path_label = ttk.Label(path_frame, text="Select Image Directory:", style='Heading.TLabel')
+        self.input_path_label.pack(anchor=tk.W, pady=(0, 8))
         
-        self.input_path_entry = ttk.Entry(self.input_path_frame, width=50)
-        self.input_path_entry.pack(side=tk.LEFT, padx=5)
+        path_input_frame = ttk.Frame(path_frame)
+        path_input_frame.pack(fill=tk.X)
+        
+        self.input_path_entry = ttk.Entry(path_input_frame, font=('Segoe UI', 9))
+        self.input_path_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 10))
         self.input_widgets.append(self.input_path_entry)
         
         self.browse_input_btn = ttk.Button(
-            self.input_path_frame, 
-            text="Browse", 
-            command=self.browse_image_directory
+            path_input_frame, 
+            text="Browse...", 
+            command=self.browse_image_directory,
+            width=12
         )
-        self.browse_input_btn.pack(side=tk.LEFT)
+        self.browse_input_btn.pack(side=tk.RIGHT)
         self.input_widgets.append(self.browse_input_btn)
 
         # Directory K Matrix selection
-        dir_k_frame = ttk.Frame(parent)
-        dir_k_frame.pack(pady=10, fill=tk.X)
+        dir_k_frame = ttk.Frame(input_section)
+        dir_k_frame.pack(fill=tk.X, pady=(0, 15))
 
-        ttk.Label(dir_k_frame, text="Select K Matrix File:").pack(anchor=tk.W, padx=5)
+        ttk.Label(dir_k_frame, text="Camera Matrix File (K):", style='Heading.TLabel').pack(anchor=tk.W, pady=(0, 8))
         
-        self.dir_k_entry = ttk.Entry(dir_k_frame, width=50)
-        self.dir_k_entry.pack(side=tk.LEFT, padx=5)
+        k_input_frame = ttk.Frame(dir_k_frame)
+        k_input_frame.pack(fill=tk.X)
+        
+        self.dir_k_entry = ttk.Entry(k_input_frame, font=('Segoe UI', 9))
+        self.dir_k_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 10))
         self.input_widgets.append(self.dir_k_entry)
         
-        browse_k_btn = ttk.Button(dir_k_frame, text="Browse", command=self.browse_k_file)
-        browse_k_btn.pack(side=tk.LEFT)
+        browse_k_btn = ttk.Button(k_input_frame, text="Browse...", command=self.browse_k_file, width=12)
+        browse_k_btn.pack(side=tk.RIGHT)
         self.input_widgets.append(browse_k_btn)
 
-        # Result format selection
-        result_format_frame = ttk.Frame(parent)
-        result_format_frame.pack(pady=10, fill=tk.X)
+        # Right column - Output Configuration
+        right_frame = ttk.Frame(top_frame)
+        right_frame.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=(10, 0))
+        
+        output_section = self.create_section_frame(right_frame, "Output Configuration")
+        output_section.pack(fill=tk.BOTH, expand=True)
 
-        ttk.Label(result_format_frame, text="Select Result Format:").pack(anchor=tk.W, padx=5)
+        # Result format selection
+        format_frame = ttk.Frame(output_section)
+        format_frame.pack(fill=tk.X, pady=(0, 20))
+
+        ttk.Label(format_frame, text="Output Format:", style='Heading.TLabel').pack(anchor=tk.W, pady=(0, 8))
+        
+        format_radio_frame = ttk.Frame(format_frame)
+        format_radio_frame.pack(anchor=tk.W)
         
         self.result_format_var = tk.StringVar()
-        self.result_format_var.set("ply")  # Default value
-        ply_radio_btn = ttk.Radiobutton(result_format_frame, text="PLY", variable=self.result_format_var, value="ply")
-        ply_radio_btn.pack(anchor=tk.W, padx=5)
+        self.result_format_var.set("ply")
+        
+        ply_radio_btn = ttk.Radiobutton(
+            format_radio_frame, 
+            text="PLY Format", 
+            variable=self.result_format_var, 
+            value="ply"
+        )
+        ply_radio_btn.pack(anchor=tk.W, pady=2)
         self.input_widgets.append(ply_radio_btn)
-        obj_radio_btn = ttk.Radiobutton(result_format_frame, text="OBJ", variable=self.result_format_var, value="obj")
-        obj_radio_btn.pack(anchor=tk.W, padx=5)
+        
+        obj_radio_btn = ttk.Radiobutton(
+            format_radio_frame, 
+            text="OBJ Format", 
+            variable=self.result_format_var, 
+            value="obj"
+        )
+        obj_radio_btn.pack(anchor=tk.W, pady=2)
         self.input_widgets.append(obj_radio_btn)
         
-        # Run button
-        run_btn = ttk.Button(parent, text="Run SFM", command=self.run_sfm)
-        run_btn.pack(pady=10)
+        # Run button - centered at bottom
+        button_frame = ttk.Frame(main_frame)
+        button_frame.pack(fill=tk.X, pady=(0, 20))
+        
+        run_btn = ttk.Button(
+            button_frame, 
+            text="Start 3D Reconstruction", 
+            command=self.run_sfm,
+            style='Action.TButton'
+        )
+        run_btn.pack(anchor=tk.CENTER)
         self.input_widgets.append(run_btn)
 
     def create_calibration_widgets(self, parent):
-        # Calibration input type
-        calib_input_frame = ttk.Frame(parent)
-        calib_input_frame.pack(pady=5, fill=tk.X)
+        # Main container with padding
+        main_frame = ttk.Frame(parent)
+        main_frame.pack(fill=tk.BOTH, expand=True, padx=15, pady=10)
+        
+        # Top frame for side-by-side layout
+        top_frame = ttk.Frame(main_frame)
+        top_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 20))
+        
+        # Left column - Calibration Source
+        left_frame = ttk.Frame(top_frame)
+        left_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 10))
+        
+        input_section = self.create_section_frame(left_frame, "Calibration Source")
+        input_section.pack(fill=tk.BOTH, expand=True)
 
-        ttk.Label(calib_input_frame, text="Calibration Source:").pack(side=tk.LEFT, padx=5)
+        # Calibration input type
+        type_frame = ttk.Frame(input_section)
+        type_frame.pack(fill=tk.X, pady=(0, 15))
+
+        ttk.Label(type_frame, text="Data Source:", style='Heading.TLabel').pack(anchor=tk.W, pady=(0, 8))
+        
+        radio_frame = ttk.Frame(type_frame)
+        radio_frame.pack(anchor=tk.W)
         
         self.calib_input_type_var = tk.StringVar(value="images")
-        ttk.Radiobutton(
-            calib_input_frame, 
-            text="Image Directory", 
+        
+        images_radio = ttk.Radiobutton(
+            radio_frame, 
+            text="Calibration Images Directory", 
             variable=self.calib_input_type_var, 
             value="images", 
             command=self.update_calib_ui
-        ).pack(side=tk.LEFT, padx=5)
-        ttk.Radiobutton(
-            calib_input_frame, 
-            text="Video File", 
+        )
+        images_radio.pack(anchor=tk.W, pady=2)
+        
+        video_radio = ttk.Radiobutton(
+            radio_frame, 
+            text="Calibration Video File", 
             variable=self.calib_input_type_var, 
             value="video", 
             command=self.update_calib_ui
-        ).pack(side=tk.LEFT, padx=5)
+        )
+        video_radio.pack(anchor=tk.W, pady=2)
 
         # Calibration input path
-        self.calib_path_frame = ttk.Frame(parent)
-        self.calib_path_frame.pack(pady=10, fill=tk.X)
+        path_frame = ttk.Frame(input_section)
+        path_frame.pack(fill=tk.X, pady=(0, 15))
 
-        self.calib_path_label = ttk.Label(self.calib_path_frame, text="Select Calibration Images Directory:")
-        self.calib_path_label.pack(anchor=tk.W, padx=5)
+        self.calib_path_label = ttk.Label(path_frame, text="Select Calibration Images Directory:", style='Heading.TLabel')
+        self.calib_path_label.pack(anchor=tk.W, pady=(0, 8))
         
-        self.calib_path_entry = ttk.Entry(self.calib_path_frame, width=50)
-        self.calib_path_entry.pack(side=tk.LEFT, padx=5)
+        path_input_frame = ttk.Frame(path_frame)
+        path_input_frame.pack(fill=tk.X)
+        
+        self.calib_path_entry = ttk.Entry(path_input_frame, font=('Segoe UI', 9))
+        self.calib_path_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 10))
         
         self.browse_calib_btn = ttk.Button(
-            self.calib_path_frame, 
-            text="Browse", 
-            command=self.browse_calib_images
+            path_input_frame, 
+            text="Browse...", 
+            command=self.browse_calib_images,
+            width=12
         )
-        self.browse_calib_btn.pack(side=tk.LEFT)
+        self.browse_calib_btn.pack(side=tk.RIGHT)
+
+        # Right column - Calibration Settings
+        right_frame = ttk.Frame(top_frame)
+        right_frame.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=(10, 0))
+        
+        settings_section = self.create_section_frame(right_frame, "Calibration Settings")
+        settings_section.pack(fill=tk.BOTH, expand=True)
 
         # Chessboard size settings
-        chessboard_frame = ttk.Frame(parent)
-        chessboard_frame.pack(pady=10, fill=tk.X)
+        chessboard_frame = ttk.Frame(settings_section)
+        chessboard_frame.pack(fill=tk.X, pady=(0, 15))
 
-        ttk.Label(chessboard_frame, text="Chessboard Size (inner corners):").pack(anchor=tk.W, padx=5)
+        ttk.Label(chessboard_frame, text="Chessboard Pattern (inner corners):", style='Heading.TLabel').pack(anchor=tk.W, pady=(0, 8))
         
         size_input_frame = ttk.Frame(chessboard_frame)
-        size_input_frame.pack(anchor=tk.W, padx=20)
+        size_input_frame.pack(anchor=tk.W)
         
-        ttk.Label(size_input_frame, text="Width:").pack(side=tk.LEFT, padx=5)
+        ttk.Label(size_input_frame, text="Width:").pack(side=tk.LEFT, padx=(0, 5))
         self.chessboard_width_var = tk.StringVar(value="10")
-        width_entry = ttk.Entry(size_input_frame, textvariable=self.chessboard_width_var, width=5)
-        width_entry.pack(side=tk.LEFT, padx=5)
+        width_entry = ttk.Entry(size_input_frame, textvariable=self.chessboard_width_var, width=8)
+        width_entry.pack(side=tk.LEFT, padx=(0, 15))
         
-        ttk.Label(size_input_frame, text="Height:").pack(side=tk.LEFT, padx=5)
+        ttk.Label(size_input_frame, text="Height:").pack(side=tk.LEFT, padx=(0, 5))
         self.chessboard_height_var = tk.StringVar(value="7")
-        height_entry = ttk.Entry(size_input_frame, textvariable=self.chessboard_height_var, width=5)
-        height_entry.pack(side=tk.LEFT, padx=5)
+        height_entry = ttk.Entry(size_input_frame, textvariable=self.chessboard_height_var, width=8)
+        height_entry.pack(side=tk.LEFT)
 
         # Frame skip for video (only shown when video is selected)
-        self.frame_skip_frame = ttk.Frame(parent)
+        self.frame_skip_frame = ttk.Frame(settings_section)
         
-        ttk.Label(self.frame_skip_frame, text="Process every Nth frame:").pack(anchor=tk.W, padx=5)
+        skip_label_frame = ttk.Frame(self.frame_skip_frame)
+        skip_label_frame.pack(fill=tk.X, pady=(0, 8))
+        ttk.Label(skip_label_frame, text="Frame Processing:", style='Heading.TLabel').pack(anchor=tk.W)
+        ttk.Label(skip_label_frame, text="Process every Nth frame:", foreground='#6c757d').pack(anchor=tk.W)
+        
         self.frame_skip_var = tk.StringVar(value="30")
-        frame_skip_entry = ttk.Entry(self.frame_skip_frame, textvariable=self.frame_skip_var, width=10)
-        frame_skip_entry.pack(anchor=tk.W, padx=20)
+        frame_skip_entry = ttk.Entry(self.frame_skip_frame, textvariable=self.frame_skip_var, width=15)
+        frame_skip_entry.pack(anchor=tk.W)
 
-        # Run calibration button
-        run_calib_btn = ttk.Button(parent, text="Run Camera Calibration", command=self.run_calibration)
-        run_calib_btn.pack(pady=10)
-
-        # Log text area (shared between tabs)
-        log_frame = ttk.Frame(self)
-        log_frame.pack(expand=True, fill=tk.BOTH, padx=10, pady=5)
+        # Run calibration button - centered at bottom
+        button_frame = ttk.Frame(main_frame)
+        button_frame.pack(fill=tk.X, pady=(0, 20))
         
-        ttk.Label(log_frame, text="Output Log:").pack(anchor=tk.W)
-        self.log_text = tk.Text(log_frame, wrap=tk.WORD, height=15)
-        scrollbar = ttk.Scrollbar(log_frame, orient=tk.VERTICAL, command=self.log_text.yview)
-        self.log_text.configure(yscrollcommand=scrollbar.set)
+        run_calib_btn = ttk.Button(
+            button_frame, 
+            text="Run Camera Calibration", 
+            command=self.run_calibration,
+            style='Action.TButton'
+        )
+        run_calib_btn.pack(anchor=tk.CENTER)
+
+    def create_log_section(self, parent):
+        """Create the output log section - full width and larger"""
+        log_section = self.create_section_frame(parent, "Processing Output")
+        log_section.pack(fill=tk.BOTH, expand=True, pady=(10, 0))
+        
+        # Create text widget with scrollbar - increased height
+        text_frame = ttk.Frame(log_section)
+        text_frame.pack(expand=True, fill=tk.BOTH)
+        
+        self.log_text = tk.Text(
+            text_frame, 
+            wrap=tk.WORD, 
+            height=18,  # Increased from 12 to 18
+            font=('Consolas', 9),
+            bg='#2d3748',
+            fg='#e2e8f0',
+            insertbackground='#4fd1c7',
+            selectbackground='#4a5568'
+        )
+        
+        log_scrollbar = ttk.Scrollbar(text_frame, orient=tk.VERTICAL, command=self.log_text.yview)
+        self.log_text.configure(yscrollcommand=log_scrollbar.set)
+        
         self.log_text.pack(side=tk.LEFT, expand=True, fill=tk.BOTH)
-        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        log_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         
-        # Status bar
+        # Add welcome message
+        welcome_msg = "Welcome to the 3D Reconstruction Tools!\nSelect your input data and configuration, then click the run button to begin.\n" + "="*60 + "\n"
+        self.log_text.insert(tk.END, welcome_msg)
+
+    def create_status_bar(self):
+        """Create modern status bar"""
+        status_frame = ttk.Frame(self)
+        status_frame.pack(side=tk.BOTTOM, fill=tk.X, padx=10, pady=(5, 10))
+        
+        separator = ttk.Separator(status_frame, orient='horizontal')
+        separator.pack(fill=tk.X, pady=(0, 8))
+        
         self.status_var = tk.StringVar(value="Ready")
-        status_bar = ttk.Label(self, textvariable=self.status_var, relief=tk.SUNKEN)
-        status_bar.pack(side=tk.BOTTOM, fill=tk.X)
+        status_bar = ttk.Label(
+            status_frame, 
+            textvariable=self.status_var,
+            font=('Segoe UI', 9),
+            foreground='#495057'
+        )
+        status_bar.pack(anchor=tk.W)
 
     def update_input_ui(self):
         """Update UI elements based on input type selection"""
@@ -230,17 +520,18 @@ class SFMApp(tk.Tk):
         else:
             self.calib_path_label.config(text="Select Calibration Video File:")
             self.browse_calib_btn.config(command=self.browse_calib_video)
-            self.frame_skip_frame.pack(pady=10, fill=tk.X)
+            self.frame_skip_frame.pack(fill=tk.X, pady=(0, 15))
 
     def browse_image_directory(self):
-        dir_path = filedialog.askdirectory()
+        dir_path = filedialog.askdirectory(title="Select Image Directory")
         if dir_path:
             self.input_path_entry.delete(0, tk.END)
             self.input_path_entry.insert(0, dir_path)
 
     def browse_video_file(self):
         file_path = filedialog.askopenfilename(
-            filetypes=[("Video Files", "*.mp4 *.avi *.mov"), ("All Files", "*.*")]
+            title="Select Video File",
+            filetypes=[("Video Files", "*.mp4 *.avi *.mov *.mkv"), ("All Files", "*.*")]
         )
         if file_path:
             self.input_path_entry.delete(0, tk.END)
@@ -255,14 +546,17 @@ class SFMApp(tk.Tk):
     def browse_calib_video(self):
         file_path = filedialog.askopenfilename(
             title="Select Calibration Video",
-            filetypes=[("Video Files", "*.mp4 *.avi *.mov"), ("All Files", "*.*")]
+            filetypes=[("Video Files", "*.mp4 *.avi *.mov *.mkv"), ("All Files", "*.*")]
         )
         if file_path:
             self.calib_path_entry.delete(0, tk.END)
             self.calib_path_entry.insert(0, file_path)
 
     def browse_k_file(self):
-        path = filedialog.askopenfilename(filetypes=[("Text Files", "*.txt"), ("All Files", "*.*")])
+        path = filedialog.askopenfilename(
+            title="Select Camera Matrix File",
+            filetypes=[("Text Files", "*.txt"), ("NumPy Files", "*.npy"), ("All Files", "*.*")]
+        )
         if path:
             self.dir_k_entry.delete(0, tk.END)
             self.dir_k_entry.insert(0, path)
@@ -275,11 +569,11 @@ class SFMApp(tk.Tk):
         # Validate inputs
         if calib_type == "images":
             if not calib_path or not os.path.isdir(calib_path):
-                messagebox.showerror("Error", "Please select a valid calibration images directory")
+                messagebox.showerror("Input Error", "Please select a valid calibration images directory")
                 return
         else:
             if not calib_path or not os.path.isfile(calib_path):
-                messagebox.showerror("Error", "Please select a valid calibration video file")
+                messagebox.showerror("Input Error", "Please select a valid calibration video file")
                 return
 
         # Get chessboard size
@@ -289,7 +583,7 @@ class SFMApp(tk.Tk):
             if width <= 0 or height <= 0:
                 raise ValueError()
         except ValueError:
-            messagebox.showerror("Error", "Please enter valid positive integers for chessboard size")
+            messagebox.showerror("Input Error", "Please enter valid positive integers for chessboard size")
             return
 
         # Get frame skip (for video only)
@@ -300,12 +594,13 @@ class SFMApp(tk.Tk):
                 if frame_skip <= 0:
                     raise ValueError()
             except ValueError:
-                messagebox.showerror("Error", "Please enter a valid positive integer for frame skip")
+                messagebox.showerror("Input Error", "Please enter a valid positive integer for frame skip")
                 return
 
         # Start calibration
         self.status_var.set("Running camera calibration...")
-        self.log_text.insert(tk.END, "\n" + "="*50 + "\n")
+        self.log_text.insert(tk.END, "\n" + "="*60 + "\n")
+        self.log_text.insert(tk.END, "Starting camera calibration process...\n")
         self.log_text.see(tk.END)
         
         calib_thread = threading.Thread(
@@ -327,6 +622,8 @@ class SFMApp(tk.Tk):
             
             if mtx is None:
                 self.output_queue.put("\nCamera calibration failed!\n")
+            else:
+                self.output_queue.put("\nCamera calibration completed successfully!\n")
                 
         except Exception as e:
             self.output_queue.put(f"\nCalibration error: {str(e)}\n")
@@ -342,20 +639,25 @@ class SFMApp(tk.Tk):
         # Validate inputs
         if input_type == "image":
             if not input_path or not os.path.isdir(input_path):
-                messagebox.showerror("Error", "Invalid image directory path")
+                messagebox.showerror("Input Error", "Please select a valid image directory")
                 return
         else:
             if not input_path or not os.path.isfile(input_path):
-                messagebox.showerror("Error", "Invalid video file path")
+                messagebox.showerror("Input Error", "Please select a valid video file")
                 return
 
         if not k_path or not os.path.isfile(k_path):
-            messagebox.showerror("Error", "Invalid K matrix file path")
+            messagebox.showerror("Input Error", "Please select a valid camera matrix file")
             return
 
         # Disable UI during processing
-        self.status_var.set("Processing...")
+        self.status_var.set("Processing 3D reconstruction...")
         self.input_state(tk.DISABLED)
+        
+        # Add processing start message
+        self.log_text.insert(tk.END, "\n" + "="*60 + "\n")
+        self.log_text.insert(tk.END, "Starting 3D reconstruction process...\n")
+        self.log_text.see(tk.END)
         
         # Start processing thread
         sfm_thread = threading.Thread(
@@ -379,7 +681,7 @@ class SFMApp(tk.Tk):
             # Run main SFM process with either image dir or temp frame dir
             sfm = StructureFromMotion(input_path, k_path)
             sfm.run(result_format)
-            self.output_queue.put("\nProcessing completed successfully!\n")
+            self.output_queue.put("\n3D reconstruction completed successfully!\n")
             
         except Exception as e:
             self.output_queue.put(f"\nError: {str(e)}\n")
@@ -400,12 +702,12 @@ class SFMApp(tk.Tk):
             count = 0
             success, image = vidcap.read()
             while success:
-                frame_path = os.path.join(output_dir, f"frame_{count}.jpg")
+                frame_path = os.path.join(output_dir, f"frame_{count:06d}.jpg")
                 cv2.imwrite(frame_path, image)
                 count += 1
                 success, image = vidcap.read()
                 
-            self.output_queue.put(f"Extracted {count} frames\n")
+            self.output_queue.put(f"Extracted {count} frames successfully\n")
             return count > 0
         except Exception as e:
             self.output_queue.put(f"Frame extraction error: {str(e)}\n")
