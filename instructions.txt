@@ -1,9 +1,9 @@
-🔧 CAMERA CALIBRATION
+>>> CAMERA CALIBRATION
 
 Before performing 3D reconstruction, you need to calibrate your camera:
 
 1. PREPARE CALIBRATION DATA:
-   • Print a chessboard pattern (recommended: 10x7 inner corners)
+   • Print a chessboard pattern
    • Take 15-30 photos of the chessboard from different angles and distances
    • Ensure the entire chessboard is visible in each image
    • Or record a video moving the chessboard around
@@ -14,9 +14,9 @@ Before performing 3D reconstruction, you need to calibrate your camera:
    • Set the correct chessboard size (inner corners count)
    • For video: adjust frame skip (30 = process every 30th frame)
    • Click "Run Camera Calibration"
-   • The camera matrix (K) will be saved automatically
+   • The camera matrix (K) will be saved automatically to camera_matrix.txt
 
-📸 STRUCTURE FROM MOTION (3D RECONSTRUCTION)
+>>> STRUCTURE FROM MOTION (3D RECONSTRUCTION)
 
 After camera calibration, create your 3D model:
 
@@ -32,41 +32,11 @@ After camera calibration, create your 3D model:
    • Browse and select the camera matrix file (K) from calibration
    • Choose output format (PLY or OBJ)
    • Click "Start 3D Reconstruction"
+   • The 3D points will be saved automatically to result.ply or result.obj
 
-📋 IMPORTANT TIPS:
-
-• IMAGE QUALITY:
-  - Use high resolution images (1080p or higher)
-  - Avoid motion blur and ensure sharp focus
-  - Maintain consistent exposure settings
-
-• CAMERA MOVEMENT:
-  - Move camera smoothly around the object
-  - Keep the object in frame at all times
-  - Capture from multiple heights and angles
-
-• LIGHTING:
-  - Use diffused, even lighting
-  - Avoid harsh shadows and reflections
-  - Outdoor overcast conditions work well
-
-• FILE ORGANIZATION:
-  - Keep images in a dedicated folder
-  - Use sequential naming (IMG_001.jpg, IMG_002.jpg, etc.)
-  - Supported formats: JPG, PNG, BMP, TIFF
-
-🎯 WORKFLOW SUMMARY:
+>>> WORKFLOW SUMMARY:
 
 1. Calibrate camera using chessboard pattern
 2. Capture images/video of target object
 3. Run Structure from Motion with calibrated camera
-4. View results in 3D modeling software (Blender, MeshLab, etc.)
-
-⚠️ TROUBLESHOOTING:
-
-• If calibration fails: Take more chessboard images with better variety
-• If reconstruction fails: Check image overlap and camera matrix file
-• Poor results: Improve lighting and reduce reflective surfaces
-• Long processing: Normal for large datasets, be patient
-
-💡 The processing output will show detailed progress information. Green text indicates success, red indicates errors or warnings.
+4. View results in 3D modeling software (Blender, MeshLab, etc.) or use web like https://imagetostl.com/view-ply-online
