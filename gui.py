@@ -11,146 +11,32 @@ import cv2
 from sfm import StructureFromMotion
 from camera_calibration import CameraCalibrator
 
-class GUI(tk.Tk):
-    def __init__(self):
-        super().__init__()
-        self.title("Structure from Motion - 3D Reconstruction Tools")
-        self.geometry("1200x800")
-        self.minsize(1000, 700)
-        self.temp_frame_dir = None
-        
-        # Configure modern styling
-        self.configure_styling()
-        
-        # Create GUI elements
-        self.create_widgets()
-        
-        # Redirect stdout
-        self.output_queue = queue.Queue()
-        self.original_stdout = sys.stdout
-        sys.stdout = StdoutRedirector(self.output_queue)
-        
-        self.after(100, self.process_output)
-        
-        # Cleanup temp directory on exit
-        self.protocol("WM_DELETE_WINDOW", self.on_close)
+class StdoutRedirector:
+    def __init__(self, queue):
+        self.queue = queue
 
-    def configure_styling(self):
-        """Configure modern styling for the application"""
-        # Configure ttk styles
-        style = ttk.Style()
-        
-        # Use a modern theme
-        available_themes = style.theme_names()
-        if 'clam' in available_themes:
-            style.theme_use('clam')
-        elif 'alt' in available_themes:
-            style.theme_use('alt')
-        
-        # Configure custom styles
-        style.configure('Title.TLabel', font=('Segoe UI', 12, 'bold'))
-        style.configure('Heading.TLabel', font=('Segoe UI', 10, 'bold'))
-        style.configure('Action.TButton', font=('Segoe UI', 10, 'bold'))
-        
-        # Configure colors
-        self.configure(bg='#f8f9fa')
+    def write(self, text):
+        self.queue.put(text)
 
-    def create_widgets(self):
-        self.input_widgets = []
-        
-        # Main container with padding
-        main_container = ttk.Frame(self)
-        main_container.pack(fill=tk.BOTH, expand=True, padx=15, pady=10)
-        
-        # Header with instructions button
-        header_frame = ttk.Frame(main_container)
-        header_frame.pack(fill=tk.X, pady=(0, 15))
-        
-        # Title and subtitle - centered
-        title_section = ttk.Frame(header_frame)
-        title_section.pack(expand=True, fill=tk.X)
-        
-        title_label = ttk.Label(
-            title_section, 
-            text="3D Reconstruction Tools", 
-            style='Title.TLabel'
-        )
-        title_label.pack(anchor=tk.CENTER)
-        
-        subtitle_label = ttk.Label(
-            title_section, 
-            text="Structure from Motion & Camera Calibration",
-            foreground='#6c757d'
-        )
-        subtitle_label.pack(anchor=tk.CENTER, pady=(5, 0))
-        
-        # Instructions button - positioned absolutely to top right
-        instructions_btn = ttk.Button(
-            header_frame,
-            text="Instructions",
-            command=self.show_instructions,
-            width=15
-        )
-        instructions_btn.place(relx=1.0, rely=0.0, anchor=tk.NE)
-        
-        # Create notebook for tabs with better styling
-        self.notebook = ttk.Notebook(main_container)
-        self.notebook.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
-        
-        # SFM Tab
-        sfm_frame = ttk.Frame(self.notebook)
-        self.notebook.add(sfm_frame, text="  Structure from Motion  ")
-        self.create_sfm_widgets(sfm_frame)
-        
-        # Camera Calibration Tab
-        calib_frame = ttk.Frame(self.notebook)
-        self.notebook.add(calib_frame, text="  Camera Calibration  ")
-        self.create_calibration_widgets(calib_frame)
-        
-        # Log section - full width at bottom
-        self.create_log_section(main_container)
-        
-        # Status bar
-        self.create_status_bar()
+    def flush(self):
+        pass
 
-    def load_instructions_text(self):
-        """Load instructions text from external file"""
-        instructions_file = "instructions.txt"
-        
-        try:
-            # Try to read from the same directory as the script
-            script_dir = os.path.dirname(os.path.abspath(__file__))
-            instructions_path = os.path.join(script_dir, instructions_file)
-            
-            if os.path.exists(instructions_path):
-                with open(instructions_path, 'r', encoding='utf-8') as f:
-                    return f.read()
-            else:
-                # Fallback: try current working directory
-                if os.path.exists(instructions_file):
-                    with open(instructions_file, 'r', encoding='utf-8') as f:
-                        return f.read()
-                else:
-                    return "Instructions file not found. Please ensure 'instructions.txt' is in the same directory as this application."
-                    
-        except Exception as e:
-            print(f"Warning: Could not load instructions from file: {e}")
-            return "Error loading instructions file."
-
-    def show_instructions(self):
-        """Show instructions popup window"""
-        instructions_window = tk.Toplevel(self)
-        instructions_window.title("Instructions - 3D Reconstruction Tools")
-        instructions_window.geometry("800x600")
-        instructions_window.resizable(True, True)
-        instructions_window.transient(self)
-        instructions_window.grab_set()
+class InstructionsDialog(tk.Toplevel):
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.title("Instructions - 3D Reconstruction Tools")
+        self.geometry("800x600")
+        self.resizable(True, True)
+        self.transient(parent)
+        self.grab_set()
         
         # Center the window
-        instructions_window.geometry("+%d+%d" % (self.winfo_rootx() + 50, self.winfo_rooty() + 50))
-        
+        self.geometry("+%d+%d" % (parent.winfo_rootx() + 50, parent.winfo_rooty() + 50))
+        self.create_widgets()
+
+    def create_widgets(self):
         # Main frame with padding
-        main_frame = ttk.Frame(instructions_window)
+        main_frame = ttk.Frame(self)
         main_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=20)
         
         # Title
@@ -182,8 +68,6 @@ class GUI(tk.Tk):
         
         # Instructions content
         instructions_text = self.load_instructions_text()
-
-        # Insert text and make it read-only
         text_widget.insert('1.0', instructions_text)
         text_widget.config(state='disabled')
         
@@ -194,19 +78,42 @@ class GUI(tk.Tk):
         close_btn = ttk.Button(
             button_frame,
             text="Close",
-            command=instructions_window.destroy,
+            command=self.destroy,
             style='Action.TButton'
         )
         close_btn.pack(anchor=tk.CENTER)
 
-    def create_section_frame(self, parent, title):
-        """Create a styled section frame with title"""
-        section_frame = ttk.LabelFrame(parent, text=title, padding=(15, 10))
-        return section_frame
+    def load_instructions_text(self):
+        """Load instructions text from external file"""
+        instructions_file = "instructions.txt"
+        
+        try:
+            script_dir = os.path.dirname(os.path.abspath(__file__))
+            instructions_path = os.path.join(script_dir, instructions_file)
+            
+            if os.path.exists(instructions_path):
+                with open(instructions_path, 'r', encoding='utf-8') as f:
+                    return f.read()
+            elif os.path.exists(instructions_file):
+                with open(instructions_file, 'r', encoding='utf-8') as f:
+                    return f.read()
+            else:
+                return "Instructions file not found. Please ensure 'instructions.txt' is in the same directory as this application."
+                    
+        except Exception as e:
+            print(f"Warning: Could not load instructions from file: {e}")
+            return "Error loading instructions file."
 
-    def create_sfm_widgets(self, parent):
+class SFMTab(ttk.Frame):
+    def __init__(self, parent, app):
+        super().__init__(parent)
+        self.app = app
+        self.input_widgets = []
+        self.create_widgets()
+
+    def create_widgets(self):
         # Main container with padding
-        main_frame = ttk.Frame(parent)
+        main_frame = ttk.Frame(self)
         main_frame.pack(fill=tk.BOTH, expand=True, padx=15, pady=10)
         
         # Top frame for side-by-side layout
@@ -217,7 +124,7 @@ class GUI(tk.Tk):
         left_frame = ttk.Frame(top_frame)
         left_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 10))
         
-        input_section = self.create_section_frame(left_frame, "Input Configuration")
+        input_section = self.app.create_section_frame(left_frame, "Input Configuration")
         input_section.pack(fill=tk.BOTH, expand=True)
 
         # Input type with modern radio buttons
@@ -293,7 +200,7 @@ class GUI(tk.Tk):
         right_frame = ttk.Frame(top_frame)
         right_frame.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=(10, 0))
         
-        output_section = self.create_section_frame(right_frame, "Output Configuration")
+        output_section = self.app.create_section_frame(right_frame, "Output Configuration")
         output_section.pack(fill=tk.BOTH, expand=True)
 
         # Result format selection
@@ -339,9 +246,135 @@ class GUI(tk.Tk):
         run_btn.pack(anchor=tk.CENTER)
         self.input_widgets.append(run_btn)
 
-    def create_calibration_widgets(self, parent):
+    def update_input_ui(self):
+        """Update UI elements based on input type selection"""
+        if self.input_type_var.get() == "image":
+            self.input_path_label.config(text="Select Image Directory:")
+            self.browse_input_btn.config(command=self.browse_image_directory)
+        else:
+            self.input_path_label.config(text="Select Video File:")
+            self.browse_input_btn.config(command=self.browse_video_file)
+
+    def browse_image_directory(self):
+        dir_path = filedialog.askdirectory(title="Select Image Directory")
+        if dir_path:
+            self.input_path_entry.delete(0, tk.END)
+            self.input_path_entry.insert(0, dir_path)
+
+    def browse_video_file(self):
+        file_path = filedialog.askopenfilename(
+            title="Select Video File",
+            filetypes=[("Video Files", "*.mp4 *.avi *.mov *.mkv"), ("All Files", "*.*")]
+        )
+        if file_path:
+            self.input_path_entry.delete(0, tk.END)
+            self.input_path_entry.insert(0, file_path)
+
+    def browse_k_file(self):
+        path = filedialog.askopenfilename(
+            title="Select Camera Matrix File",
+            filetypes=[("Text Files", "*.txt"), ("NumPy Files", "*.npy"), ("All Files", "*.*")]
+        )
+        if path:
+            self.dir_k_entry.delete(0, tk.END)
+            self.dir_k_entry.insert(0, path)
+
+    def run_sfm(self):
+        input_path = self.input_path_entry.get()
+        k_path = self.dir_k_entry.get()
+        result_format = self.result_format_var.get()
+        input_type = self.input_type_var.get()
+
+        # Validate inputs
+        if input_type == "image":
+            if not input_path or not os.path.isdir(input_path):
+                messagebox.showerror("Input Error", "Please select a valid image directory")
+                return
+        else:
+            if not input_path or not os.path.isfile(input_path):
+                messagebox.showerror("Input Error", "Please select a valid video file")
+                return
+
+        if not k_path or not os.path.isfile(k_path):
+            messagebox.showerror("Input Error", "Please select a valid camera matrix file")
+            return
+
+        # Disable UI during processing
+        self.app.status_var.set("Processing 3D reconstruction...")
+        self.set_input_state(tk.DISABLED)
+        
+        # Add processing start message
+        self.app.log_text.insert(tk.END, "\n" + "="*60 + "\n")
+        self.app.log_text.insert(tk.END, "Starting 3D reconstruction process...\n")
+        self.app.log_text.see(tk.END)
+        
+        # Start processing thread
+        sfm_thread = threading.Thread(
+            target=self.execute_sfm,
+            args=(input_path, k_path, result_format, input_type),
+            daemon=True
+        )
+        sfm_thread.start()
+
+    def execute_sfm(self, input_path, k_path, result_format, input_type):
+        try:
+            # Handle video input
+            if input_type == "video":
+                self.app.output_queue.put("Extracting frames from video...\n")
+                self.app.temp_frame_dir = tempfile.mkdtemp()
+                success = self.extract_frames(input_path, self.app.temp_frame_dir)
+                if not success:
+                    raise ValueError("Failed to extract frames from video")
+                input_path = self.app.temp_frame_dir
+
+            # Run main SFM process with either image dir or temp frame dir
+            sfm = StructureFromMotion(input_path, k_path)
+            sfm.run(result_format)
+            self.app.output_queue.put("\n3D reconstruction completed successfully!\n")
+            
+        except Exception as e:
+            self.app.output_queue.put(f"\nError: {str(e)}\n")
+        finally:
+            self.set_input_state(tk.NORMAL)
+            self.app.status_var.set("Ready")
+            # Cleanup temp directory
+            if self.app.temp_frame_dir and os.path.exists(self.app.temp_frame_dir):
+                shutil.rmtree(self.app.temp_frame_dir)
+                self.app.temp_frame_dir = None
+
+    def extract_frames(self, video_path, output_dir):
+        try:
+            vidcap = cv2.VideoCapture(video_path)
+            if not vidcap.isOpened():
+                return False
+
+            count = 0
+            success, image = vidcap.read()
+            while success:
+                frame_path = os.path.join(output_dir, f"frame_{count:06d}.jpg")
+                cv2.imwrite(frame_path, image)
+                count += 1
+                success, image = vidcap.read()
+                
+            self.app.output_queue.put(f"Extracted {count} frames successfully\n")
+            return count > 0
+        except Exception as e:
+            self.app.output_queue.put(f"Frame extraction error: {str(e)}\n")
+            return False
+
+    def set_input_state(self, state):
+        for widget in self.input_widgets:
+            widget.config(state=state)
+
+class CalibrationTab(ttk.Frame):
+    def __init__(self, parent, app):
+        super().__init__(parent)
+        self.app = app
+        self.create_widgets()
+
+    def create_widgets(self):
         # Main container with padding
-        main_frame = ttk.Frame(parent)
+        main_frame = ttk.Frame(self)
         main_frame.pack(fill=tk.BOTH, expand=True, padx=15, pady=10)
         
         # Top frame for side-by-side layout
@@ -352,7 +385,7 @@ class GUI(tk.Tk):
         left_frame = ttk.Frame(top_frame)
         left_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 10))
         
-        input_section = self.create_section_frame(left_frame, "Calibration Source")
+        input_section = self.app.create_section_frame(left_frame, "Calibration Source")
         input_section.pack(fill=tk.BOTH, expand=True)
 
         # Calibration input type
@@ -409,7 +442,7 @@ class GUI(tk.Tk):
         right_frame = ttk.Frame(top_frame)
         right_frame.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=(10, 0))
         
-        settings_section = self.create_section_frame(right_frame, "Calibration Settings")
+        settings_section = self.app.create_section_frame(right_frame, "Calibration Settings")
         settings_section.pack(fill=tk.BOTH, expand=True)
 
         # Chessboard size settings
@@ -454,6 +487,204 @@ class GUI(tk.Tk):
             style='Action.TButton'
         )
         run_calib_btn.pack(anchor=tk.CENTER)
+
+    def update_calib_ui(self):
+        """Update calibration UI based on input type"""
+        if self.calib_input_type_var.get() == "images":
+            self.calib_path_label.config(text="Select Calibration Images Directory:")
+            self.browse_calib_btn.config(command=self.browse_calib_images)
+            self.frame_skip_frame.pack_forget()
+        else:
+            self.calib_path_label.config(text="Select Calibration Video File:")
+            self.browse_calib_btn.config(command=self.browse_calib_video)
+            self.frame_skip_frame.pack(fill=tk.X, pady=(0, 15))
+
+    def browse_calib_images(self):
+        dir_path = filedialog.askdirectory(title="Select Calibration Images Directory")
+        if dir_path:
+            self.calib_path_entry.delete(0, tk.END)
+            self.calib_path_entry.insert(0, dir_path)
+
+    def browse_calib_video(self):
+        file_path = filedialog.askopenfilename(
+            title="Select Calibration Video",
+            filetypes=[("Video Files", "*.mp4 *.avi *.mov *.mkv"), ("All Files", "*.*")]
+        )
+        if file_path:
+            self.calib_path_entry.delete(0, tk.END)
+            self.calib_path_entry.insert(0, file_path)
+
+    def run_calibration(self):
+        """Run camera calibration in a separate thread"""
+        calib_path = self.calib_path_entry.get()
+        calib_type = self.calib_input_type_var.get()
+        
+        # Validate inputs
+        if calib_type == "images":
+            if not calib_path or not os.path.isdir(calib_path):
+                messagebox.showerror("Input Error", "Please select a valid calibration images directory")
+                return
+        else:
+            if not calib_path or not os.path.isfile(calib_path):
+                messagebox.showerror("Input Error", "Please select a valid calibration video file")
+                return
+
+        # Get chessboard size
+        try:
+            width = int(self.chessboard_width_var.get())
+            height = int(self.chessboard_height_var.get())
+            if width <= 0 or height <= 0:
+                raise ValueError()
+        except ValueError:
+            messagebox.showerror("Input Error", "Please enter valid positive integers for chessboard size")
+            return
+
+        # Get frame skip (for video only)
+        frame_skip = 30
+        if calib_type == "video":
+            try:
+                frame_skip = int(self.frame_skip_var.get())
+                if frame_skip <= 0:
+                    raise ValueError()
+            except ValueError:
+                messagebox.showerror("Input Error", "Please enter a valid positive integer for frame skip")
+                return
+
+        # Start calibration
+        self.app.status_var.set("Running camera calibration...")
+        self.app.log_text.insert(tk.END, "\n" + "="*60 + "\n")
+        self.app.log_text.insert(tk.END, "Starting camera calibration process...\n")
+        self.app.log_text.see(tk.END)
+        
+        calib_thread = threading.Thread(
+            target=self.execute_calibration,
+            args=(calib_path, calib_type, (width, height), frame_skip),
+            daemon=True
+        )
+        calib_thread.start()
+
+    def execute_calibration(self, calib_path, calib_type, chessboard_size, frame_skip):
+        """Execute camera calibration"""
+        try:
+            calibrator = CameraCalibrator(chessboard_size)
+            
+            if calib_type == "images":
+                mtx = calibrator.calibrate_from_images(calib_path)
+            else:
+                mtx = calibrator.calibrate_from_video(calib_path, frame_skip)
+            
+            if mtx is None:
+                self.app.output_queue.put("\nCamera calibration failed!\n")
+            else:
+                self.app.output_queue.put("\nCamera calibration completed successfully!\n")
+                
+        except Exception as e:
+            self.app.output_queue.put(f"\nCalibration error: {str(e)}\n")
+        finally:
+            self.app.status_var.set("Ready")
+
+class GUI(tk.Tk):
+    def __init__(self):
+        super().__init__()
+        self.title("Structure from Motion - 3D Reconstruction Tools")
+        self.geometry("1200x800")
+        self.minsize(1000, 700)
+        self.temp_frame_dir = None
+        
+        # Configure modern styling
+        self.configure_styling()
+        
+        # Create GUI elements
+        self.create_widgets()
+        
+        # Redirect stdout
+        self.output_queue = queue.Queue()
+        self.original_stdout = sys.stdout
+        sys.stdout = StdoutRedirector(self.output_queue)
+        
+        self.after(100, self.process_output)
+        
+        # Cleanup temp directory on exit
+        self.protocol("WM_DELETE_WINDOW", self.on_close)
+
+    def configure_styling(self):
+        """Configure modern styling for the application"""
+        # Configure ttk styles
+        style = ttk.Style()
+        
+        # Use a modern theme
+        available_themes = style.theme_names()
+        if 'clam' in available_themes:
+            style.theme_use('clam')
+        elif 'alt' in available_themes:
+            style.theme_use('alt')
+        
+        # Configure custom styles
+        style.configure('Title.TLabel', font=('Segoe UI', 12, 'bold'))
+        style.configure('Heading.TLabel', font=('Segoe UI', 10, 'bold'))
+        style.configure('Action.TButton', font=('Segoe UI', 10, 'bold'))
+        
+        # Configure colors
+        self.configure(bg='#f8f9fa')
+
+    def create_widgets(self):
+        # Main container with padding
+        main_container = ttk.Frame(self)
+        main_container.pack(fill=tk.BOTH, expand=True, padx=15, pady=10)
+        
+        # Header with instructions button
+        header_frame = ttk.Frame(main_container)
+        header_frame.pack(fill=tk.X, pady=(0, 15))
+        
+        # Title and subtitle - centered
+        title_section = ttk.Frame(header_frame)
+        title_section.pack(expand=True, fill=tk.X)
+        
+        title_label = ttk.Label(
+            title_section, 
+            text="3D Reconstruction Tools", 
+            style='Title.TLabel'
+        )
+        title_label.pack(anchor=tk.CENTER)
+        
+        subtitle_label = ttk.Label(
+            title_section, 
+            text="Structure from Motion & Camera Calibration",
+            foreground='#6c757d'
+        )
+        subtitle_label.pack(anchor=tk.CENTER, pady=(5, 0))
+        
+        # Instructions button - positioned absolutely to top right
+        instructions_btn = ttk.Button(
+            header_frame,
+            text="Instructions",
+            command=self.show_instructions,
+            width=15
+        )
+        instructions_btn.place(relx=1.0, rely=0.0, anchor=tk.NE)
+        
+        # Create notebook for tabs with better styling
+        self.notebook = ttk.Notebook(main_container)
+        self.notebook.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
+        
+        # SFM Tab
+        self.sfm_tab = SFMTab(self.notebook, self)
+        self.notebook.add(self.sfm_tab, text="  Structure from Motion  ")
+        
+        # Camera Calibration Tab
+        self.calib_tab = CalibrationTab(self.notebook, self)
+        self.notebook.add(self.calib_tab, text="  Camera Calibration  ")
+        
+        # Log section - full width at bottom
+        self.create_log_section(main_container)
+        
+        # Status bar
+        self.create_status_bar()
+
+    def create_section_frame(self, parent, title):
+        """Create a styled section frame with title"""
+        section_frame = ttk.LabelFrame(parent, text=title, padding=(15, 10))
+        return section_frame
 
     def create_log_section(self, parent):
         """Create the output log section - full width and larger"""
@@ -502,220 +733,9 @@ class GUI(tk.Tk):
         )
         status_bar.pack(anchor=tk.W)
 
-    def update_input_ui(self):
-        """Update UI elements based on input type selection"""
-        if self.input_type_var.get() == "image":
-            self.input_path_label.config(text="Select Image Directory:")
-            self.browse_input_btn.config(command=self.browse_image_directory)
-        else:
-            self.input_path_label.config(text="Select Video File:")
-            self.browse_input_btn.config(command=self.browse_video_file)
-
-    def update_calib_ui(self):
-        """Update calibration UI based on input type"""
-        if self.calib_input_type_var.get() == "images":
-            self.calib_path_label.config(text="Select Calibration Images Directory:")
-            self.browse_calib_btn.config(command=self.browse_calib_images)
-            self.frame_skip_frame.pack_forget()
-        else:
-            self.calib_path_label.config(text="Select Calibration Video File:")
-            self.browse_calib_btn.config(command=self.browse_calib_video)
-            self.frame_skip_frame.pack(fill=tk.X, pady=(0, 15))
-
-    def browse_image_directory(self):
-        dir_path = filedialog.askdirectory(title="Select Image Directory")
-        if dir_path:
-            self.input_path_entry.delete(0, tk.END)
-            self.input_path_entry.insert(0, dir_path)
-
-    def browse_video_file(self):
-        file_path = filedialog.askopenfilename(
-            title="Select Video File",
-            filetypes=[("Video Files", "*.mp4 *.avi *.mov *.mkv"), ("All Files", "*.*")]
-        )
-        if file_path:
-            self.input_path_entry.delete(0, tk.END)
-            self.input_path_entry.insert(0, file_path)
-
-    def browse_calib_images(self):
-        dir_path = filedialog.askdirectory(title="Select Calibration Images Directory")
-        if dir_path:
-            self.calib_path_entry.delete(0, tk.END)
-            self.calib_path_entry.insert(0, dir_path)
-
-    def browse_calib_video(self):
-        file_path = filedialog.askopenfilename(
-            title="Select Calibration Video",
-            filetypes=[("Video Files", "*.mp4 *.avi *.mov *.mkv"), ("All Files", "*.*")]
-        )
-        if file_path:
-            self.calib_path_entry.delete(0, tk.END)
-            self.calib_path_entry.insert(0, file_path)
-
-    def browse_k_file(self):
-        path = filedialog.askopenfilename(
-            title="Select Camera Matrix File",
-            filetypes=[("Text Files", "*.txt"), ("NumPy Files", "*.npy"), ("All Files", "*.*")]
-        )
-        if path:
-            self.dir_k_entry.delete(0, tk.END)
-            self.dir_k_entry.insert(0, path)
-
-    def run_calibration(self):
-        """Run camera calibration in a separate thread"""
-        calib_path = self.calib_path_entry.get()
-        calib_type = self.calib_input_type_var.get()
-        
-        # Validate inputs
-        if calib_type == "images":
-            if not calib_path or not os.path.isdir(calib_path):
-                messagebox.showerror("Input Error", "Please select a valid calibration images directory")
-                return
-        else:
-            if not calib_path or not os.path.isfile(calib_path):
-                messagebox.showerror("Input Error", "Please select a valid calibration video file")
-                return
-
-        # Get chessboard size
-        try:
-            width = int(self.chessboard_width_var.get())
-            height = int(self.chessboard_height_var.get())
-            if width <= 0 or height <= 0:
-                raise ValueError()
-        except ValueError:
-            messagebox.showerror("Input Error", "Please enter valid positive integers for chessboard size")
-            return
-
-        # Get frame skip (for video only)
-        frame_skip = 30
-        if calib_type == "video":
-            try:
-                frame_skip = int(self.frame_skip_var.get())
-                if frame_skip <= 0:
-                    raise ValueError()
-            except ValueError:
-                messagebox.showerror("Input Error", "Please enter a valid positive integer for frame skip")
-                return
-
-        # Start calibration
-        self.status_var.set("Running camera calibration...")
-        self.log_text.insert(tk.END, "\n" + "="*60 + "\n")
-        self.log_text.insert(tk.END, "Starting camera calibration process...\n")
-        self.log_text.see(tk.END)
-        
-        calib_thread = threading.Thread(
-            target=self.execute_calibration,
-            args=(calib_path, calib_type, (width, height), frame_skip),
-            daemon=True
-        )
-        calib_thread.start()
-
-    def execute_calibration(self, calib_path, calib_type, chessboard_size, frame_skip):
-        """Execute camera calibration"""
-        try:
-            calibrator = CameraCalibrator(chessboard_size)
-            
-            if calib_type == "images":
-                mtx = calibrator.calibrate_from_images(calib_path)
-            else:
-                mtx = calibrator.calibrate_from_video(calib_path, frame_skip)
-            
-            if mtx is None:
-                self.output_queue.put("\nCamera calibration failed!\n")
-            else:
-                self.output_queue.put("\nCamera calibration completed successfully!\n")
-                
-        except Exception as e:
-            self.output_queue.put(f"\nCalibration error: {str(e)}\n")
-        finally:
-            self.status_var.set("Ready")
-
-    def run_sfm(self):
-        input_path = self.input_path_entry.get()
-        k_path = self.dir_k_entry.get()
-        result_format = self.result_format_var.get()
-        input_type = self.input_type_var.get()
-
-        # Validate inputs
-        if input_type == "image":
-            if not input_path or not os.path.isdir(input_path):
-                messagebox.showerror("Input Error", "Please select a valid image directory")
-                return
-        else:
-            if not input_path or not os.path.isfile(input_path):
-                messagebox.showerror("Input Error", "Please select a valid video file")
-                return
-
-        if not k_path or not os.path.isfile(k_path):
-            messagebox.showerror("Input Error", "Please select a valid camera matrix file")
-            return
-
-        # Disable UI during processing
-        self.status_var.set("Processing 3D reconstruction...")
-        self.input_state(tk.DISABLED)
-        
-        # Add processing start message
-        self.log_text.insert(tk.END, "\n" + "="*60 + "\n")
-        self.log_text.insert(tk.END, "Starting 3D reconstruction process...\n")
-        self.log_text.see(tk.END)
-        
-        # Start processing thread
-        sfm_thread = threading.Thread(
-            target=self.execute_sfm,
-            args=(input_path, k_path, result_format, input_type),
-            daemon=True
-        )
-        sfm_thread.start()
-
-    def execute_sfm(self, input_path, k_path, result_format, input_type):
-        try:
-            # Handle video input
-            if input_type == "video":
-                self.output_queue.put("Extracting frames from video...\n")
-                self.temp_frame_dir = tempfile.mkdtemp()
-                success = self.extract_frames(input_path, self.temp_frame_dir)
-                if not success:
-                    raise ValueError("Failed to extract frames from video")
-                input_path = self.temp_frame_dir
-
-            # Run main SFM process with either image dir or temp frame dir
-            sfm = StructureFromMotion(input_path, k_path)
-            sfm.run(result_format)
-            self.output_queue.put("\n3D reconstruction completed successfully!\n")
-            
-        except Exception as e:
-            self.output_queue.put(f"\nError: {str(e)}\n")
-        finally:
-            self.input_state(tk.NORMAL)
-            self.status_var.set("Ready")
-            # Cleanup temp directory
-            if self.temp_frame_dir and os.path.exists(self.temp_frame_dir):
-                shutil.rmtree(self.temp_frame_dir)
-                self.temp_frame_dir = None
-
-    def extract_frames(self, video_path, output_dir):
-        try:
-            vidcap = cv2.VideoCapture(video_path)
-            if not vidcap.isOpened():
-                return False
-
-            count = 0
-            success, image = vidcap.read()
-            while success:
-                frame_path = os.path.join(output_dir, f"frame_{count:06d}.jpg")
-                cv2.imwrite(frame_path, image)
-                count += 1
-                success, image = vidcap.read()
-                
-            self.output_queue.put(f"Extracted {count} frames successfully\n")
-            return count > 0
-        except Exception as e:
-            self.output_queue.put(f"Frame extraction error: {str(e)}\n")
-            return False
-
-    def input_state(self, state):
-        for widget in self.input_widgets:
-            widget.config(state=state)
+    def show_instructions(self):
+        """Show instructions popup window"""
+        InstructionsDialog(self)
 
     def process_output(self):
         while not self.output_queue.empty():
@@ -729,16 +749,6 @@ class GUI(tk.Tk):
         if self.temp_frame_dir and os.path.exists(self.temp_frame_dir):
             shutil.rmtree(self.temp_frame_dir)
         self.destroy()
-
-class StdoutRedirector:
-    def __init__(self, queue):
-        self.queue = queue
-
-    def write(self, text):
-        self.queue.put(text)
-
-    def flush(self):
-        pass
 
 if __name__ == "__main__":
     app = GUI()
