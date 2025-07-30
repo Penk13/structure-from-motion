@@ -127,13 +127,17 @@ class SFMTab(ttk.Frame):
         input_section = self.app.create_section_frame(left_frame, "Input Configuration")
         input_section.pack(fill=tk.BOTH, expand=True)
 
-        # Input type with modern radio buttons
-        type_frame = ttk.Frame(input_section)
-        type_frame.pack(fill=tk.X, pady=(0, 15))
+        # Data source and frame processing container
+        source_frame = ttk.Frame(input_section)
+        source_frame.pack(fill=tk.X, pady=(0, 15))
         
-        ttk.Label(type_frame, text="Data Source:", style='Heading.TLabel').pack(anchor=tk.W)
+        # Left side - Data Source
+        source_left = ttk.Frame(source_frame)
+        source_left.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 20))
         
-        radio_frame = ttk.Frame(type_frame)
+        ttk.Label(source_left, text="Data Source:", style='Heading.TLabel').pack(anchor=tk.W)
+        
+        radio_frame = ttk.Frame(source_left)
         radio_frame.pack(anchor=tk.W, pady=(8, 0))
         
         self.input_type_var = tk.StringVar(value="image")
@@ -155,6 +159,26 @@ class SFMTab(ttk.Frame):
             command=self.update_input_ui
         )
         video_radio.pack(anchor=tk.W, pady=2)
+        
+        # Right side - Frame Processing (always reserve space, but content visibility controlled)
+        frame_processing_container = ttk.Frame(source_frame, width=150)
+        frame_processing_container.pack(side=tk.RIGHT, anchor=tk.N, fill=tk.Y)
+        frame_processing_container.pack_propagate(False)  # Prevent container from shrinking
+        
+        self.frame_skip_frame = ttk.Frame(frame_processing_container)
+        
+        skip_label_frame = ttk.Frame(self.frame_skip_frame)
+        skip_label_frame.pack(fill=tk.X, pady=(0, 8))
+        ttk.Label(skip_label_frame, text="Frame Processing:", style='Heading.TLabel').pack(anchor=tk.W)
+        ttk.Label(skip_label_frame, text="Process every Nth frame:", foreground='#6c757d').pack(anchor=tk.W)
+        
+        self.frame_skip_var = tk.StringVar(value="30")
+        frame_skip_entry = ttk.Entry(self.frame_skip_frame, textvariable=self.frame_skip_var, width=15)
+        frame_skip_entry.pack(anchor=tk.W)
+        self.input_widgets.append(frame_skip_entry)
+        
+        # Initially hide frame processing content since default is "image"
+        # Container stays packed to maintain layout
 
         # Input Path selection with improved layout
         path_frame = ttk.Frame(input_section)
@@ -251,9 +275,11 @@ class SFMTab(ttk.Frame):
         if self.input_type_var.get() == "image":
             self.input_path_label.config(text="Select Image Directory:")
             self.browse_input_btn.config(command=self.browse_image_directory)
+            self.frame_skip_frame.pack_forget()
         else:
             self.input_path_label.config(text="Select Video File:")
             self.browse_input_btn.config(command=self.browse_video_file)
+            self.frame_skip_frame.pack(fill=tk.BOTH)
 
     def browse_image_directory(self):
         dir_path = filedialog.askdirectory(title="Select Image Directory")
@@ -299,6 +325,17 @@ class SFMTab(ttk.Frame):
             messagebox.showerror("Input Error", "Please select a valid camera matrix file")
             return
 
+        # Get frame skip for video
+        frame_skip = 30
+        if input_type == "video":
+            try:
+                frame_skip = int(self.frame_skip_var.get())
+                if frame_skip <= 0:
+                    raise ValueError()
+            except ValueError:
+                messagebox.showerror("Input Error", "Please enter a valid positive integer for frame skip")
+                return
+
         # Disable UI during processing
         self.app.status_var.set("Processing 3D reconstruction...")
         self.set_input_state(tk.DISABLED)
@@ -311,18 +348,18 @@ class SFMTab(ttk.Frame):
         # Start processing thread
         sfm_thread = threading.Thread(
             target=self.execute_sfm,
-            args=(input_path, k_path, result_format, input_type),
+            args=(input_path, k_path, result_format, input_type, frame_skip),
             daemon=True
         )
         sfm_thread.start()
 
-    def execute_sfm(self, input_path, k_path, result_format, input_type):
+    def execute_sfm(self, input_path, k_path, result_format, input_type, frame_skip=30):
         try:
             # Handle video input
             if input_type == "video":
                 self.app.output_queue.put("Extracting frames from video...\n")
                 self.app.temp_frame_dir = tempfile.mkdtemp()
-                success = self.extract_frames(input_path, self.app.temp_frame_dir)
+                success = self.extract_frames(input_path, self.app.temp_frame_dir, frame_skip)
                 if not success:
                     raise ValueError("Failed to extract frames from video")
                 input_path = self.app.temp_frame_dir
@@ -342,21 +379,24 @@ class SFMTab(ttk.Frame):
                 shutil.rmtree(self.app.temp_frame_dir)
                 self.app.temp_frame_dir = None
 
-    def extract_frames(self, video_path, output_dir):
+    def extract_frames(self, video_path, output_dir, frame_skip=30):
         try:
             vidcap = cv2.VideoCapture(video_path)
             if not vidcap.isOpened():
                 return False
 
             count = 0
+            frame_index = 0
             success, image = vidcap.read()
             while success:
-                frame_path = os.path.join(output_dir, f"frame_{count:06d}.jpg")
-                cv2.imwrite(frame_path, image)
-                count += 1
+                if frame_index % (frame_skip + 1) == 0:
+                    frame_path = os.path.join(output_dir, f"frame_{count:06d}.jpg")
+                    cv2.imwrite(frame_path, image)
+                    count += 1
+                frame_index += 1
                 success, image = vidcap.read()
                 
-            self.app.output_queue.put(f"Extracted {count} frames successfully\n")
+            self.app.output_queue.put(f"Extracted {count} frames successfully (every {frame_skip + 1} frames)\n")
             return count > 0
         except Exception as e:
             self.app.output_queue.put(f"Frame extraction error: {str(e)}\n")
